@@ -634,7 +634,8 @@ private struct ActivityHeatmap: View {
                                                 .padding(-2)
                                         }
                                     }
-                                    .help("\(point.date.formatted(date: .abbreviated, time: .omitted)) · \(dashboardCNY(point.costMicrosCNY))")
+                                    .contentShape(Rectangle())
+                                    .help(dayTooltip(for: point))
                             }
                         }
                     }
@@ -672,6 +673,20 @@ private struct ActivityHeatmap: View {
         case 3: Color.dashboardCoral.opacity(0.64)
         default: Color.dashboardCoral
         }
+    }
+
+    /// The heatmap already owns a complete 140-day in-memory snapshot. Build
+    /// the native hover text from that value so pointer interaction never
+    /// reaches the repository, collector, or exchange-rate provider.
+    private func dayTooltip(for day: DailyDashboardUsage) -> String {
+        let date = day.date.formatted(date: .long, time: .omitted)
+        let total = TokenFormatter.compact(day.totalTokens)
+        let input = TokenFormatter.compact(day.inputTokens)
+        let output = TokenFormatter.compact(day.outputTokens)
+        let cache = TokenFormatter.compact(
+            day.cacheReadTokens.saturatingAdd(day.cacheWriteTokens)
+        )
+        return "\(date)\n费用 \(dashboardCNY(day.costMicrosCNY)) · \(day.requestCount.formatted()) 次请求\nToken \(total) · 输入 \(input) · 输出 \(output) · 缓存 \(cache)"
     }
 }
 
