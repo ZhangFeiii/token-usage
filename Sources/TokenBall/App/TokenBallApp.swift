@@ -46,12 +46,14 @@ private final class PassthroughHostingView<Content: View>: NSHostingView<Content
 final class TokenUsageController: NSObject {
     static let shared = TokenUsageController()
 
-    // Keep the default shell close to the target Retina size (about 1,200
-    // physical pixels wide). `panelFrame()` recalculates this for the screen
-    // that owns the status item, including non-Retina displays.
-    private static let preferredPanelSize = NSSize(width: 600, height: 810)
-    private static let targetPanelPixelWidth: CGFloat = 1_200
-    private static let panelHeightToWidthRatio: CGFloat = 1.35
+    // The shell is deliberately proportional to the display. Keeping these
+    // values in one place makes the compact CodexBar-like density consistent
+    // while still allowing the panel to fit a smaller laptop display.
+    private static let panelWidthFraction: CGFloat = 0.27
+    private static let minimumPanelWidth: CGFloat = 430
+    private static let maximumPanelWidth: CGFloat = 540
+    private static let panelHeightFraction: CGFloat = 0.74
+    private static let panelHeightToWidthRatio: CGFloat = 1.42
     private static let panelScreenInset: CGFloat = 12
     private static let panelGap: CGFloat = 8
     private static let menuBarItemWidth: CGFloat = 82
@@ -228,17 +230,18 @@ final class TokenUsageController: NSObject {
     }
 
     private func makePanel() -> NSPanel {
+        let initialSize = panelSize(for: statusItemScreen())
         let rootView = UsagePanelView(viewModel: viewModel)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         let hostingView = NSHostingView(rootView: rootView)
-        hostingView.frame = NSRect(origin: .zero, size: Self.preferredPanelSize)
+        hostingView.frame = NSRect(origin: .zero, size: initialSize)
         hostingView.autoresizingMask = [.width, .height]
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
         hostingView.layer?.isOpaque = false
 
         let panel = TokenUsagePanel(
-            contentRect: NSRect(origin: .zero, size: Self.preferredPanelSize),
+            contentRect: NSRect(origin: .zero, size: initialSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -283,26 +286,33 @@ final class TokenUsageController: NSObject {
         return NSRect(origin: NSPoint(x: x, y: y), size: size)
     }
 
-    /// Returns a point size that is approximately 1,200 physical pixels wide
-    /// while preserving the intentionally narrow panel proportions. On a
-    /// short or narrow display both dimensions are reduced together, so the
-    /// panel never extends beyond the visible screen frame.
+    /// Returns a compact point size derived from the display's visible frame.
+    /// Width is proportional to the physical display width, then converted
+    /// back to points using that display's backing scale. This avoids a fixed
+    /// pixel target while keeping the same visual density across Retina and
+    /// non-Retina screens.
     private func panelSize(for screen: NSScreen) -> NSSize {
         let visibleFrame = screen.visibleFrame
         let backingScale = max(1, screen.backingScaleFactor)
-        let targetWidth = Self.targetPanelPixelWidth / backingScale
+        let visibleWidthPixels = visibleFrame.width * backingScale
+        let proportionalWidthPixels = visibleWidthPixels * Self.panelWidthFraction
+        let minimumWidthPixels = Self.minimumPanelWidth * backingScale
+        let maximumWidthPixels = Self.maximumPanelWidth * backingScale
+        let panelWidthPixels = min(
+            maximumWidthPixels,
+            max(minimumWidthPixels, proportionalWidthPixels)
+        )
+        let targetWidth = panelWidthPixels / backingScale
         let targetHeight = targetWidth * Self.panelHeightToWidthRatio
         let availableWidth = max(1, visibleFrame.width - Self.panelScreenInset * 2)
         let availableHeight = max(1, visibleFrame.height - Self.panelScreenInset * 2)
-        let fitScale = min(
-            1,
-            availableWidth / targetWidth,
-            availableHeight / targetHeight
-        )
+        let heightBudget = min(targetHeight, availableHeight * Self.panelHeightFraction)
+        let fitWidth = min(targetWidth, heightBudget / Self.panelHeightToWidthRatio)
+        let width = min(availableWidth, fitWidth)
 
         return NSSize(
-            width: max(1, targetWidth * fitScale),
-            height: max(1, targetHeight * fitScale)
+            width: max(1, width),
+            height: max(1, width * Self.panelHeightToWidthRatio)
         )
     }
 
