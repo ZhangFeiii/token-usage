@@ -49,11 +49,11 @@ final class TokenUsageController: NSObject {
     // The shell is deliberately proportional to the display. Keeping these
     // values in one place makes the compact CodexBar-like density consistent
     // while still allowing the panel to fit a smaller laptop display.
-    private static let panelWidthFraction: CGFloat = 0.27
-    private static let minimumPanelWidth: CGFloat = 430
-    private static let maximumPanelWidth: CGFloat = 540
-    private static let panelHeightFraction: CGFloat = 0.74
-    private static let panelHeightToWidthRatio: CGFloat = 1.42
+    private static let panelWidthFraction: CGFloat = 0.29
+    private static let minimumPanelWidth: CGFloat = 460
+    private static let maximumPanelWidth: CGFloat = 560
+    private static let panelHeightFraction: CGFloat = 0.76
+    private static let panelHeightToWidthRatio: CGFloat = 1.34
     private static let panelScreenInset: CGFloat = 12
     private static let panelGap: CGFloat = 8
     private static let menuBarItemWidth: CGFloat = 82

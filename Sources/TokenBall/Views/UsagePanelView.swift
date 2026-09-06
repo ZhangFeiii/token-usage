@@ -17,6 +17,10 @@ private enum DashboardTextStyle {
     case smallStrong
     case badge
     case chart
+    case sessionSummary
+    case sessionTitle
+    case sessionCost
+    case sessionMeta
     case sessionDate
     case donutValue
     case donutLabel
@@ -40,7 +44,11 @@ private enum DashboardTextStyle {
         case .smallStrong: 11
         case .badge: 9
         case .chart: 8
-        case .sessionDate: 15
+        case .sessionSummary: 12
+        case .sessionTitle: 14
+        case .sessionCost: 12
+        case .sessionMeta: 11
+        case .sessionDate: 16
         case .donutValue: 20
         case .donutLabel: 11
         case .emptyIcon: 30
@@ -51,8 +59,10 @@ private enum DashboardTextStyle {
 
     var weight: Font.Weight {
         switch self {
-        case .sidebarTitle, .sectionTitle, .metricValue, .smallStrong, .sessionDate, .donutValue, .emptyTitle:
+        case .sidebarTitle, .sectionTitle, .metricValue, .smallStrong, .sessionDate, .donutValue, .emptyTitle, .sessionCost:
             .bold
+        case .sessionTitle:
+            .semibold
         case .bodyMedium, .smallMedium, .badge:
             .medium
         case .bodyStrong:
@@ -92,14 +102,17 @@ private struct DashboardLayoutMetrics: Equatable {
     var sidebarWidth: CGFloat { min(138, max(112, panelSize.width * 0.24)) }
     var sidebarTopPadding: CGFloat { max(14, 18 * density) }
     var sidebarTitleBottomPadding: CGFloat { max(14, 18 * density) }
-    var navigationRowHeight: CGFloat { max(32, 38 * density) }
+    var navigationRowHeight: CGFloat { max(38, 40 * density) }
     var navigationCornerRadius: CGFloat { max(10, 12 * density) }
     var sidebarHorizontalPadding: CGFloat { max(10, 13 * density) }
     var sidebarNavigationPadding: CGFloat { max(5, 6 * density) }
     var contentWidth: CGFloat {
         max(1, panelSize.width - sidebarWidth - outerPadding * 2 - 1)
     }
-    var donutSize: CGFloat { min(150, max(116, contentWidth * 0.40)) }
+    // Reserve the compact chart column for the legend. The previous 150pt
+    // cap left too little room for model names and agent badges on laptop
+    // panels, causing the legend to collapse into ellipses.
+    var donutSize: CGFloat { min(124, max(108, contentWidth * 0.32)) }
     var weeklyChartHeight: CGFloat { min(140, max(112, contentWidth * 0.37)) }
     var emptyMinHeight: CGFloat { max(180, 220 * density) }
 
@@ -265,7 +278,7 @@ private struct DashboardSidebar: View {
                         }
                         .foregroundStyle(selection == tab ? Color.dashboardCoral : Color.tokenMuted)
                         .padding(.horizontal, 10 * metrics.density)
-                        .frame(height: metrics.navigationRowHeight)
+                        .frame(maxWidth: .infinity, minHeight: metrics.navigationRowHeight, alignment: .leading)
                         .background {
                             if selection == tab {
                                 RoundedRectangle(cornerRadius: metrics.navigationCornerRadius, style: .continuous)
@@ -273,11 +286,14 @@ private struct DashboardSidebar: View {
                                     .overlay {
                                         RoundedRectangle(cornerRadius: metrics.navigationCornerRadius, style: .continuous)
                                             .stroke(Color.dashboardCoral.opacity(0.30), lineWidth: 1)
-                                    }
+                                }
                             }
                         }
+                        .contentShape(RoundedRectangle(cornerRadius: metrics.navigationCornerRadius, style: .continuous))
                     }
                     .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, minHeight: metrics.navigationRowHeight)
+                    .contentShape(Rectangle())
                 }
             }
             .padding(.horizontal, metrics.sidebarNavigationPadding)
@@ -842,7 +858,7 @@ private struct DonutChart: View {
 
         ZStack {
             Circle()
-                .stroke(Color.primary.opacity(0.06), lineWidth: 34 * metrics.density)
+                .stroke(Color.primary.opacity(0.06), lineWidth: ringWidth)
             ForEach(slices) { slice in
                 Circle()
                     .trim(
@@ -851,25 +867,32 @@ private struct DonutChart: View {
                     )
                     .stroke(
                         dashboardPalette[slice.index % dashboardPalette.count],
-                        style: StrokeStyle(lineWidth: 34 * metrics.density, lineCap: .butt)
+                        style: StrokeStyle(lineWidth: ringWidth, lineCap: .butt)
                     )
                     .rotationEffect(.degrees(-90))
             }
             VStack(spacing: max(3, 4 * metrics.density)) {
-                Text(dashboardCNY(totalCost))
+                Text(shortCNY(totalCost))
                     .font(metrics.font(.donutValue))
                     .foregroundStyle(Color.tokenInk)
                     .monospacedDigit()
                     .lineLimit(1)
                     .allowsTightening(true)
-                    .minimumScaleFactor(0.55)
-                    .frame(maxWidth: .infinity)
+                    .minimumScaleFactor(0.60)
+                    .frame(maxWidth: metrics.donutSize * 0.68)
                 Text("total")
                     .font(metrics.font(.donutLabel))
                     .foregroundStyle(Color.tokenMuted)
             }
         }
-        .padding(16 * metrics.density)
+        .padding(4 * metrics.density)
+        .help("总费用：\(dashboardCNY(totalCost))")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("总费用 \(dashboardCNY(totalCost))")
+    }
+
+    private var ringWidth: CGFloat {
+        max(16, 20 * metrics.density)
     }
 
     private var donutSlices: [DonutSlice] {
@@ -1096,7 +1119,7 @@ private struct SessionsDashboard: View {
                             .allowsTightening(true)
                             .minimumScaleFactor(0.70)
                         Text("\(sessions.count) sessions · \(dashboardCNY(totalCost)) · \(TokenFormatter.compact(totalTokens)) tokens")
-                            .font(metrics.font(.metricSubtitle))
+                            .font(metrics.font(.sessionSummary))
                             .foregroundStyle(Color.tokenMuted)
                             .monospacedDigit()
                             .lineLimit(1)
@@ -1169,7 +1192,7 @@ private struct SessionRow: View {
         VStack(alignment: .leading, spacing: max(5, 7 * metrics.density)) {
             HStack(alignment: .firstTextBaseline, spacing: max(7, 10 * metrics.density)) {
                 Text(displayTitle)
-                    .font(metrics.font(.bodyStrong))
+                    .font(metrics.font(.sessionTitle))
                     .foregroundStyle(Color.tokenInk)
                     .lineLimit(1)
                     .allowsTightening(true)
@@ -1177,7 +1200,7 @@ private struct SessionRow: View {
                     .layoutPriority(1)
                 Spacer(minLength: 8)
                 Text(dashboardCNY(session.costMicrosCNY))
-                    .font(metrics.font(.smallStrong))
+                    .font(metrics.font(.sessionCost))
                     .foregroundStyle(Color.dashboardCoral)
                     .monospacedDigit()
                     .lineLimit(1)
@@ -1194,9 +1217,12 @@ private struct SessionRow: View {
                 Spacer()
                 Text("\(session.requestCount.formatted()) req")
             }
-            .font(metrics.font(.small))
+            .font(metrics.font(.sessionMeta))
             .foregroundStyle(Color.tokenMuted)
             .monospacedDigit()
+            .lineLimit(1)
+            .allowsTightening(true)
+            .minimumScaleFactor(0.78)
 
             TokenCompositionBar(session: session)
                 .frame(height: max(5, 6 * metrics.density))
@@ -1216,10 +1242,15 @@ private struct SessionRow: View {
                 }
                 Spacer(minLength: 6)
                 Text("cache \(dashboardPercent(session.cacheHitRate)) hit")
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            .font(metrics.font(.small))
+            .font(metrics.font(.sessionMeta))
             .foregroundStyle(Color.tokenMuted)
             .monospacedDigit()
+            .lineLimit(1)
+            .allowsTightening(true)
+            .minimumScaleFactor(0.78)
         }
         .padding(.vertical, max(8, 11 * metrics.density))
         .help(session.projectPath ?? session.sessionID)
