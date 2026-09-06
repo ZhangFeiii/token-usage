@@ -35,6 +35,42 @@ final class LocalUsageCollectorTests: XCTestCase {
         XCTAssertEqual(fallback.cacheWriteTokens, 0)
     }
 
+    func testCodexJSONLParserMeasuresResponseWindowsWithoutToolWaits() throws {
+        let jsonl = """
+        {"type":"event_msg","timestamp":"2026-08-17T02:00:00Z","payload":{"type":"task_started"}}
+        {"type":"turn_context","timestamp":"2026-08-17T02:00:00Z","payload":{"model":"gpt-test"}}
+        {"type":"response_item","timestamp":"2026-08-17T02:00:05Z","payload":{"type":"reasoning"}}
+        {"type":"response_item","timestamp":"2026-08-17T02:00:10Z","payload":{"type":"function_call","name":"delegate"}}
+        {"type":"event_msg","timestamp":"2026-08-17T02:02:10Z","payload":{"type":"item_completed","item":{"type":"SubAgentActivity"}}}
+        {"type":"response_item","timestamp":"2026-08-17T02:02:10Z","payload":{"type":"function_call_output","output":"done"}}
+        {"type":"event_msg","timestamp":"2026-08-17T02:02:10Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":100,"total_tokens":110},"total_token_usage":{"input_tokens":10,"output_tokens":100,"total_tokens":110}}}}
+        {"type":"response_item","timestamp":"2026-08-17T02:02:15Z","payload":{"type":"reasoning"}}
+        {"type":"response_item","timestamp":"2026-08-17T02:02:19Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"finished"}]}}
+        {"type":"event_msg","timestamp":"2026-08-17T02:02:19Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5,"output_tokens":50,"total_tokens":55},"total_token_usage":{"input_tokens":15,"output_tokens":150,"total_tokens":165}}}}
+        """
+
+        let records = CodexJSONLUsageParser().parse(content: jsonl, sourceID: "timed")
+
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(try XCTUnwrap(records[0].generationDurationSeconds), 10, accuracy: 0.001)
+        // The 120-second tool execution is between the assistant tool call and
+        // its output, so it must not be included in the 9-second second window.
+        XCTAssertEqual(try XCTUnwrap(records[1].generationDurationSeconds), 9, accuracy: 0.001)
+    }
+
+    func testCodexJSONLParserWithholdsUnboundedGenerationWindow() throws {
+        let jsonl = """
+        {"type":"event_msg","timestamp":"2026-08-17T02:00:00Z","payload":{"type":"task_started"}}
+        {"type":"response_item","timestamp":"2026-08-17T02:10:00Z","payload":{"type":"message","role":"assistant","content":"finished"}}
+        {"type":"event_msg","timestamp":"2026-08-17T02:10:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":100,"total_tokens":110},"total_token_usage":{"input_tokens":10,"output_tokens":100,"total_tokens":110}}}}
+        """
+
+        let records = CodexJSONLUsageParser().parse(content: jsonl, sourceID: "unbounded")
+        let record = try XCTUnwrap(records.first)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertNil(record.generationDurationSeconds)
+    }
+
     func testOpenCodeSessionRowMappingNormalizesModelTokensAndMilliseconds() throws {
         let row = OpenCodeSessionRow(
             id: "session-1",
@@ -58,6 +94,7 @@ final class LocalUsageCollectorTests: XCTestCase {
         XCTAssertEqual(record.outputTokens, 25)
         XCTAssertEqual(record.cacheReadTokens, 30)
         XCTAssertEqual(record.cacheWriteTokens, 10)
+        XCTAssertNil(record.generationDurationSeconds)
         XCTAssertEqual(record.recordedAt.timeIntervalSince1970, 1_786_629_030.650, accuracy: 0.001)
     }
 

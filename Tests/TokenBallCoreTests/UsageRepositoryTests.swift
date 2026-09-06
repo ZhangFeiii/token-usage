@@ -245,6 +245,60 @@ final class UsageRepositoryTests: XCTestCase {
         XCTAssertEqual(snapshot.agents.first { $0.id == "claude" }?.todayTokens, 50)
     }
 
+    func testDashboardUsesResponseGenerationWindowsInsteadOfSessionLifetime() async throws {
+        let context = makeDateContext()
+        let repository = SQLiteUsageRepository(databaseURL: databaseURL)
+        try await repository.importRecords([
+            UsageRecord(
+                id: "measured-1",
+                agent: "codex",
+                model: "gpt",
+                freshInputTokens: 100,
+                outputTokens: 100,
+                recordedAt: context.now.addingTimeInterval(-100),
+                sessionID: "measured",
+                sessionStartedAt: context.now.addingTimeInterval(-7_200),
+                sessionEndedAt: context.now.addingTimeInterval(-100),
+                generationDurationSeconds: 10
+            ),
+            UsageRecord(
+                id: "measured-2",
+                agent: "codex",
+                model: "gpt",
+                freshInputTokens: 50,
+                outputTokens: 50,
+                recordedAt: context.now.addingTimeInterval(-50),
+                sessionID: "measured",
+                sessionStartedAt: context.now.addingTimeInterval(-7_200),
+                sessionEndedAt: context.now.addingTimeInterval(-50),
+                generationDurationSeconds: 5
+            ),
+            UsageRecord(
+                id: "unmeasured",
+                agent: "opencode",
+                model: "gpt",
+                freshInputTokens: 20,
+                outputTokens: 20,
+                recordedAt: context.now.addingTimeInterval(-25),
+                sessionID: "unmeasured",
+                sessionStartedAt: context.now.addingTimeInterval(-7_200),
+                sessionEndedAt: context.now.addingTimeInterval(-25)
+            )
+        ])
+
+        let snapshot = try await repository.fetchDashboard(
+            now: context.now,
+            sessionDate: context.now,
+            usdToCNYRate: 7.2,
+            calendar: context.calendar
+        )
+
+        let measured = try XCTUnwrap(snapshot.sessions.first { $0.sessionID == "measured" })
+        XCTAssertEqual(try XCTUnwrap(measured.tokensPerSecond), 10, accuracy: 0.001)
+        let unmeasured = try XCTUnwrap(snapshot.sessions.first { $0.sessionID == "unmeasured" })
+        XCTAssertNil(unmeasured.tokensPerSecond)
+    }
+
     private func record(
         id: String,
         agent: String = "codex",

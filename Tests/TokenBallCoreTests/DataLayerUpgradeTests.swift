@@ -66,6 +66,7 @@ final class DataLayerUpgradeTests: XCTestCase {
                   "projectPath":"/tmp/project",
                   "sessionStartedAt":1787041800,
                   "sessionEndedAt":1787041840,
+                  "generationDurationSeconds":12.5,
                   "requestCount":3
                 }
                 """.utf8
@@ -80,6 +81,7 @@ final class DataLayerUpgradeTests: XCTestCase {
         XCTAssertEqual(current.requestCount, 3)
         XCTAssertEqual(current.costMicrosUSD, 12)
         XCTAssertEqual(current.costMicrosCNY, 86)
+        XCTAssertEqual(try XCTUnwrap(current.generationDurationSeconds), 12.5, accuracy: 0.001)
     }
 
     func testSQLiteMigratesLegacySchemaInPlaceAndPreservesRows() async throws {
@@ -94,7 +96,8 @@ final class DataLayerUpgradeTests: XCTestCase {
         let columns = try tableColumns(in: databaseURL, table: "tokenball_usage_records")
         for required in [
             "cost_micros_usd", "cost_micros_cny", "session_id", "session_title",
-            "project_path", "session_started_at", "session_ended_at", "request_count"
+            "project_path", "session_started_at", "session_ended_at",
+            "generation_duration_seconds", "request_count"
         ] {
             XCTAssertTrue(columns.contains(required), "migration did not add \(required)")
         }
@@ -112,7 +115,8 @@ final class DataLayerUpgradeTests: XCTestCase {
             projectPath: "/tmp/migrated",
             sessionStartedAt: context.now.addingTimeInterval(-60),
             sessionEndedAt: context.now,
-            requestCount: 2
+            requestCount: 2,
+            generationDurationSeconds: 3
         )
         let inserted = try await repository.append(migrated)
         XCTAssertTrue(inserted)

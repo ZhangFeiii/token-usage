@@ -65,6 +65,13 @@ public enum OpenAIModelPricing {
 
 /// Parses the token-count events emitted by Codex archived session JSONL files.
 public struct CodexJSONLUsageParser: Sendable {
+    /// A response longer than this is not considered measurable from the
+    /// archived event stream. The logs expose completion/boundary timestamps,
+    /// but not a guaranteed model-generation start timestamp; refusing an
+    /// implausibly long window is safer than reporting a rate diluted by a
+    /// hidden tool or idle interval.
+    private static let maximumGenerationWindowSeconds: TimeInterval = 5 * 60
+
     public init() {}
 
     public func parse(data: Data, sourceID: String) -> [UsageRecord] {
@@ -86,6 +93,9 @@ public struct CodexJSONLUsageParser: Sendable {
         var sessionTitle: String?
         var sessionStartedAt: Date?
         var sessionEndedAt: Date?
+        var generationStartAt: Date?
+        var lastAssistantEventAt: Date?
+        var pendingToolBoundaryAt: Date?
 
         for (offset, rawLine) in content.split(
             separator: "\n",
@@ -112,7 +122,10 @@ public struct CodexJSONLUsageParser: Sendable {
                 }
             }
 
-            if envelope["type"] as? String == "session_meta" {
+            let envelopeType = envelope["type"] as? String
+            let payloadType = payload["type"] as? String
+
+            if envelopeType == "session_meta" {
                 sessionID = Self.nonEmptyString(
                     payload["id"] ?? payload["session_id"] ?? payload["sessionID"]
                 ) ?? sessionID
@@ -127,8 +140,7 @@ public struct CodexJSONLUsageParser: Sendable {
                 }
             }
 
-            if envelope["type"] as? String == "response_item" ||
-                payload["type"] as? String == "message" {
+            if envelopeType == "response_item" || payloadType == "message" {
                 let role = Self.nonEmptyString(payload["role"])
                     ?? Self.nonEmptyString((payload["message"] as? [String: Any])?["role"])
                 if role?.lowercased() == "user", sessionTitle == nil {
@@ -138,14 +150,47 @@ public struct CodexJSONLUsageParser: Sendable {
                 }
             }
 
-            if envelope["type"] as? String == "turn_context" {
+            // Codex does not persist a model response's start time directly,
+            // but it does persist task boundaries and completed assistant
+            // items. Keep an active response window from the task/tool
+            // boundary up to the last assistant item immediately preceding a
+            // token_count event. Tool execution therefore never becomes part
+            // of the measured generation duration.
+            if envelopeType == "event_msg" {
+                switch payloadType {
+                case "task_started":
+                    generationStartAt = eventDate
+                    lastAssistantEventAt = nil
+                    pendingToolBoundaryAt = nil
+                case "item_completed":
+                    if let eventDate {
+                        if Self.isAssistantItemCompleted(payload) {
+                            lastAssistantEventAt = eventDate
+                        } else if Self.isToolBoundaryItemCompleted(payload) {
+                            pendingToolBoundaryAt = eventDate
+                        }
+                    }
+                default:
+                    break
+                }
+            } else if envelopeType == "response_item",
+                      Self.isAssistantResponseItem(payload),
+                      let eventDate {
+                lastAssistantEventAt = eventDate
+            } else if envelopeType == "response_item",
+                      Self.isToolBoundaryResponseItem(payload),
+                      let eventDate {
+                pendingToolBoundaryAt = eventDate
+            }
+
+            if envelopeType == "turn_context" {
                 currentModel = Self.modelName(from: payload["model"]) ?? currentModel
                 continue
             }
 
             guard
-                envelope["type"] as? String == "event_msg",
-                payload["type"] as? String == "token_count",
+                envelopeType == "event_msg",
+                payloadType == "token_count",
                 let info = payload["info"] as? [String: Any]
             else { continue }
 
@@ -175,6 +220,11 @@ public struct CodexJSONLUsageParser: Sendable {
             )
             let freshInput = max(0, counts.inputTokens - min(counts.inputTokens, cachedInput))
             let normalizedSourceID = sourceID.isEmpty ? "session" : sourceID
+            let generationDurationSeconds = Self.generationDuration(
+                startedAt: generationStartAt,
+                assistantEventAt: lastAssistantEventAt,
+                usageAt: recordedAt
+            )
 
             records.append(
                 UsageRecord(
@@ -197,9 +247,18 @@ public struct CodexJSONLUsageParser: Sendable {
                     sessionTitle: sessionTitle,
                     projectPath: projectPath,
                     sessionStartedAt: sessionStartedAt,
-                    sessionEndedAt: sessionEndedAt
+                    sessionEndedAt: sessionEndedAt,
+                    generationDurationSeconds: generationDurationSeconds
                 )
             )
+
+            // A token_count closes the response whose usage it reports. The
+            // next model response begins after this boundary (usually after a
+            // tool output), so never carry the prior response's start/end
+            // marker into the next row.
+            generationStartAt = pendingToolBoundaryAt ?? recordedAt
+            lastAssistantEventAt = nil
+            pendingToolBoundaryAt = nil
         }
 
         // Session metadata often appears before usage events, but malformed or
@@ -223,9 +282,82 @@ public struct CodexJSONLUsageParser: Sendable {
                 projectPath: projectPath,
                 sessionStartedAt: sessionStartedAt,
                 sessionEndedAt: sessionEndedAt,
-                requestCount: 1
+                requestCount: 1,
+                generationDurationSeconds: record.generationDurationSeconds
             )
         }
+    }
+
+    private static func generationDuration(
+        startedAt: Date?,
+        assistantEventAt: Date?,
+        usageAt: Date
+    ) -> TimeInterval? {
+        guard let startedAt, let assistantEventAt else { return nil }
+        // A malformed/out-of-order log must not create a negative duration;
+        // cap the end at the usage event because token_count is the enclosing
+        // response's accounting boundary.
+        let end = min(assistantEventAt, usageAt)
+        let duration = end.timeIntervalSince(startedAt)
+        guard duration > 0, duration <= maximumGenerationWindowSeconds else {
+            return nil
+        }
+        return duration
+    }
+
+    private static func isAssistantResponseItem(_ payload: [String: Any]) -> Bool {
+        guard let rawType = payload["type"] as? String else { return false }
+        let type = rawType.lowercased().replacingOccurrences(of: "_", with: "")
+        switch type {
+        case "reasoning", "customtoolcall", "functioncall", "toolcall", "agentmessage", "assistantmessage":
+            return true
+        case "message":
+            let role = nonEmptyString(payload["role"])
+                ?? nonEmptyString((payload["message"] as? [String: Any])?["role"])
+            return role?.lowercased() == "assistant"
+        default:
+            return false
+        }
+    }
+
+    private static func isAssistantItemCompleted(_ payload: [String: Any]) -> Bool {
+        guard
+            let item = payload["item"] as? [String: Any],
+            let rawType = item["type"] as? String
+        else { return false }
+        let type = rawType.lowercased().replacingOccurrences(of: "_", with: "")
+        return type == "reasoning"
+            || type == "agentmessage"
+            || type == "assistantmessage"
+            || type == "assistantoutput"
+    }
+
+    private static func isToolBoundaryResponseItem(_ payload: [String: Any]) -> Bool {
+        guard let rawType = payload["type"] as? String else { return false }
+        let type = rawType.lowercased().replacingOccurrences(of: "_", with: "")
+        return type == "customtoolcalloutput"
+            || type == "functioncalloutput"
+            || type == "toolcalloutput"
+            || type == "toolresult"
+    }
+
+    private static func isToolBoundaryItemCompleted(_ payload: [String: Any]) -> Bool {
+        guard
+            let item = payload["item"] as? [String: Any],
+            let rawType = item["type"] as? String
+        else { return false }
+        let type = rawType.lowercased().replacingOccurrences(of: "_", with: "")
+        return type == "commandexecution"
+            || type == "collabagenttoolcall"
+            || type == "contextcompaction"
+            || type == "extension"
+            || type == "filechange"
+            || type == "imageview"
+            || type == "mcptoolcall"
+            || type == "subagentactivity"
+            || type == "toolcall"
+            || type == "toolresult"
+            || type == "tooloutput"
     }
 
     private static func nonEmptyString(_ value: Any?) -> String? {

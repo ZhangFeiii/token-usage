@@ -1236,9 +1236,11 @@ private struct SessionRow: View {
                     Text(String(format: "%.1f tok/s", speed))
                         .foregroundStyle(Color.dashboardPurple)
                         .fontWeight(.semibold)
+                        .help("响应级有效生成速率（近似值）")
                 } else {
                     Text("— tok/s")
                         .foregroundStyle(Color.dashboardPurple)
+                        .help("该数据源缺少可靠的响应级生成时间")
                 }
                 Spacer(minLength: 6)
                 Text("cache \(dashboardPercent(session.cacheHitRate)) hit")

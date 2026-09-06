@@ -67,6 +67,13 @@ public struct UsageRecord: Identifiable, Codable, Equatable, Sendable {
     public let projectPath: String?
     public let sessionStartedAt: Date?
     public let sessionEndedAt: Date?
+    /// Effective model-generation time represented by this row, in seconds.
+    ///
+    /// This is intentionally separate from the session lifecycle timestamps:
+    /// a session may contain user think time, tool execution, or long idle
+    /// gaps. Sources that cannot provide response-level timing leave this
+    /// value nil, so the dashboard does not manufacture a misleading rate.
+    public let generationDurationSeconds: Double?
     /// Number of effective model responses represented by this row.
     public let requestCount: Int
 
@@ -86,7 +93,8 @@ public struct UsageRecord: Identifiable, Codable, Equatable, Sendable {
         projectPath: String? = nil,
         sessionStartedAt: Date? = nil,
         sessionEndedAt: Date? = nil,
-        requestCount: Int = 1
+        requestCount: Int = 1,
+        generationDurationSeconds: Double? = nil
     ) {
         self.id = id
         self.agent = agent
@@ -103,12 +111,20 @@ public struct UsageRecord: Identifiable, Codable, Equatable, Sendable {
         self.projectPath = Self.normalizedOptional(projectPath)
         self.sessionStartedAt = sessionStartedAt
         self.sessionEndedAt = sessionEndedAt
+        if let generationDurationSeconds,
+           generationDurationSeconds.isFinite,
+           generationDurationSeconds > 0 {
+            self.generationDurationSeconds = generationDurationSeconds
+        } else {
+            self.generationDurationSeconds = nil
+        }
         self.requestCount = max(1, requestCount)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, agent, model, freshInputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costMicrosUSD, costMicrosCNY, recordedAt
-        case sessionID, sessionTitle, projectPath, sessionStartedAt, sessionEndedAt, requestCount
+        case sessionID, sessionTitle, projectPath, sessionStartedAt, sessionEndedAt
+        case generationDurationSeconds, requestCount
     }
 
     public init(from decoder: Decoder) throws {
@@ -129,7 +145,11 @@ public struct UsageRecord: Identifiable, Codable, Equatable, Sendable {
             projectPath: try container.decodeIfPresent(String.self, forKey: .projectPath),
             sessionStartedAt: try container.decodeIfPresent(Date.self, forKey: .sessionStartedAt),
             sessionEndedAt: try container.decodeIfPresent(Date.self, forKey: .sessionEndedAt),
-            requestCount: try container.decodeIfPresent(Int.self, forKey: .requestCount) ?? 1
+            requestCount: try container.decodeIfPresent(Int.self, forKey: .requestCount) ?? 1,
+            generationDurationSeconds: try container.decodeIfPresent(
+                Double.self,
+                forKey: .generationDurationSeconds
+            )
         )
     }
 
@@ -228,6 +248,7 @@ public actor SQLiteUsageRepository: UsageRecordStore {
         "project_path",
         "session_started_at",
         "session_ended_at",
+        "generation_duration_seconds",
         "request_count"
     ]
 
@@ -557,6 +578,7 @@ public actor SQLiteUsageRepository: UsageRecordStore {
             project_path,
             session_started_at,
             session_ended_at,
+            generation_duration_seconds,
             request_count
         FROM \(Self.tableName)
         WHERE recorded_at >= ? AND recorded_at < ?
@@ -596,7 +618,8 @@ public actor SQLiteUsageRepository: UsageRecordStore {
                     projectPath: optionalStringColumn(statement, index: 12),
                     sessionStartedAt: optionalDateColumn(statement, index: 13),
                     sessionEndedAt: optionalDateColumn(statement, index: 14),
-                    requestCount: max(1, Int(sqlite3_column_int64(statement, 15)))
+                    generationDurationSeconds: optionalDoubleColumn(statement, index: 15),
+                    requestCount: max(1, Int(sqlite3_column_int64(statement, 16)))
                 )
             )
         }
@@ -698,14 +721,19 @@ public actor SQLiteUsageRepository: UsageRecordStore {
             )
         }.sorted(by: Self.dashboardProjectSort)
         let sessions = sessionBuckets.values.map { bucket in
-            let duration: TimeInterval?
-            if let started = bucket.startedAt, let ended = bucket.endedAt, ended > started {
-                duration = ended.timeIntervalSince(started)
-            } else {
-                duration = nil
-            }
+            // Only use response-level active windows. Lifecycle timestamps are
+            // still shown in the session header, but they intentionally do
+            // not participate in tok/s because they include user pauses,
+            // tool execution, and cross-day idle time.
             let output = Double(bucket.outputTokens)
-            let speed = duration.flatMap { $0 > 0 ? output / $0 : nil }
+            let speed: Double?
+            if bucket.unmeasuredOutputTokens == 0,
+               bucket.generationDurationSeconds > 0,
+               bucket.generationDurationSeconds.isFinite {
+                speed = output / bucket.generationDurationSeconds
+            } else {
+                speed = nil
+            }
             // Cache hit is the share of all input-side tokens served from the
             // read cache. Cache writes are input tokens too, so they belong in
             // the denominator even though they are not hits.
@@ -771,16 +799,18 @@ public actor SQLiteUsageRepository: UsageRecordStore {
             INSERT OR IGNORE INTO \(Self.tableName) (
                 record_id, agent, model, fresh_input_tokens, output_tokens,
                 cache_read_tokens, cache_write_tokens, cost_micros_usd, cost_micros_cny, recorded_at,
-                session_id, session_title, project_path, session_started_at, session_ended_at, request_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                session_id, session_title, project_path, session_started_at, session_ended_at,
+                generation_duration_seconds, request_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
         case .upsert:
             sql = """
             INSERT INTO \(Self.tableName) (
                 record_id, agent, model, fresh_input_tokens, output_tokens,
                 cache_read_tokens, cache_write_tokens, cost_micros_usd, cost_micros_cny, recorded_at,
-                session_id, session_title, project_path, session_started_at, session_ended_at, request_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                session_id, session_title, project_path, session_started_at, session_ended_at,
+                generation_duration_seconds, request_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(record_id) DO UPDATE SET
                 agent = excluded.agent,
                 model = excluded.model,
@@ -796,6 +826,7 @@ public actor SQLiteUsageRepository: UsageRecordStore {
                 project_path = excluded.project_path,
                 session_started_at = excluded.session_started_at,
                 session_ended_at = excluded.session_ended_at,
+                generation_duration_seconds = excluded.generation_duration_seconds,
                 request_count = excluded.request_count
             """
         }
@@ -874,6 +905,10 @@ public actor SQLiteUsageRepository: UsageRecordStore {
            !sessionEndedAt.timeIntervalSince1970.isFinite {
             throw UsageRepositoryError.invalidRecord(id: record.id, reason: "会话结束时间无效")
         }
+        if let generationDurationSeconds = record.generationDurationSeconds,
+           !generationDurationSeconds.isFinite || generationDurationSeconds <= 0 {
+            throw UsageRepositoryError.invalidRecord(id: record.id, reason: "模型生成时长无效")
+        }
         guard record.requestCount > 0 else {
             throw UsageRepositoryError.invalidRecord(id: record.id, reason: "请求数必须大于零")
         }
@@ -895,7 +930,8 @@ public actor SQLiteUsageRepository: UsageRecordStore {
         bindOptionalText(record.projectPath, to: statement, index: 13)
         bindOptionalDate(record.sessionStartedAt, to: statement, index: 14)
         bindOptionalDate(record.sessionEndedAt, to: statement, index: 15)
-        sqlite3_bind_int64(statement, 16, Int64(record.requestCount))
+        bindOptionalDouble(record.generationDurationSeconds, to: statement, index: 16)
+        sqlite3_bind_int64(statement, 17, Int64(record.requestCount))
     }
 
     private func bindOptionalText(_ value: String?, to statement: OpaquePointer, index: Int32) {
@@ -912,6 +948,14 @@ public actor SQLiteUsageRepository: UsageRecordStore {
             return
         }
         sqlite3_bind_double(statement, index, value.timeIntervalSince1970)
+    }
+
+    private func bindOptionalDouble(_ value: Double?, to statement: OpaquePointer, index: Int32) {
+        guard let value else {
+            sqlite3_bind_null(statement, index)
+            return
+        }
+        sqlite3_bind_double(statement, index, value)
     }
 
     private func openDatabase() throws -> OpaquePointer {
@@ -970,6 +1014,7 @@ public actor SQLiteUsageRepository: UsageRecordStore {
                 project_path TEXT,
                 session_started_at REAL,
                 session_ended_at REAL,
+                generation_duration_seconds REAL,
                 request_count INTEGER NOT NULL DEFAULT 1 CHECK(request_count > 0)
             ) WITHOUT ROWID
             """,
@@ -1017,6 +1062,12 @@ public actor SQLiteUsageRepository: UsageRecordStore {
         if !columns.contains("session_ended_at") {
             try execute(
                 "ALTER TABLE \(Self.tableName) ADD COLUMN session_ended_at REAL",
+                in: database
+            )
+        }
+        if !columns.contains("generation_duration_seconds") {
+            try execute(
+                "ALTER TABLE \(Self.tableName) ADD COLUMN generation_duration_seconds REAL",
                 in: database
             )
         }
@@ -1123,6 +1174,12 @@ public actor SQLiteUsageRepository: UsageRecordStore {
         return seconds.isFinite ? Date(timeIntervalSince1970: seconds) : nil
     }
 
+    private func optionalDoubleColumn(_ statement: OpaquePointer, index: Int32) -> Double? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else { return nil }
+        let value = sqlite3_column_double(statement, index)
+        return value.isFinite && value > 0 ? value : nil
+    }
+
     private static func cnyCost(usdMicros: Int64, cnyMicros: Int64, rate: Double) -> Int64 {
         let converted = (Double(max(0, usdMicros)) * rate).rounded()
         let convertedMicros: Int64
@@ -1209,6 +1266,7 @@ private struct DashboardStoredRecord: Sendable {
     let projectPath: String?
     let sessionStartedAt: Date?
     let sessionEndedAt: Date?
+    let generationDurationSeconds: Double?
     let requestCount: Int
 }
 
@@ -1274,6 +1332,12 @@ private struct DashboardSessionBucket: Sendable {
     var cacheWriteTokens: Int64 = 0
     var requestCount: Int = 0
     var costMicrosCNY: Int64 = 0
+    /// Sum of response-level generation windows for rows with reliable timing.
+    var generationDurationSeconds: TimeInterval = 0
+    /// Output tokens from rows for which no reliable generation window exists.
+    /// A session rate is withheld when this is non-zero rather than silently
+    /// dividing only the measurable subset.
+    var unmeasuredOutputTokens: Int64 = 0
 
     init(key: String, sessionID: String) {
         self.key = key
@@ -1301,6 +1365,17 @@ private struct DashboardSessionBucket: Sendable {
             ? Int.max
             : requestCount + row.requestCount
         self.costMicrosCNY = TokenArithmetic.addingWithoutOverflow(self.costMicrosCNY, costMicrosCNY)
+
+        if let duration = row.generationDurationSeconds,
+           duration.isFinite,
+           duration > 0 {
+            generationDurationSeconds += duration
+        } else if row.outputTokens > 0 {
+            unmeasuredOutputTokens = TokenArithmetic.addingWithoutOverflow(
+                unmeasuredOutputTokens,
+                row.outputTokens
+            )
+        }
 
         let started = row.sessionStartedAt ?? row.recordedAt
         let ended = row.sessionEndedAt ?? row.recordedAt
