@@ -48,7 +48,7 @@ struct UsagePanelView: View {
 
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(16)
+                    .padding(12)
             }
         }
         // The AppKit shell sizes the panel in points based on the display's
@@ -108,38 +108,38 @@ private struct DashboardSidebar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                TokenOrbView(size: 28)
+                TokenOrbView(size: 24)
                 Text("Token\nUsage")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.tokenInk)
                     .lineSpacing(1)
             }
-            .padding(.top, 24)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 24)
+            .padding(.top, 18)
+            .padding(.horizontal, 13)
+            .padding(.bottom, 18)
 
-            VStack(spacing: 6) {
+            VStack(spacing: 4) {
                 ForEach(DashboardTab.allCases) { tab in
                     Button {
                         selection = tab
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: tab.symbol)
-                                .font(.system(size: 17, weight: .regular))
-                                .frame(width: 20)
+                                .font(.system(size: 15, weight: .regular))
+                                .frame(width: 18)
                             Text(tab.rawValue)
-                                .font(.system(size: 16, weight: .regular, design: .rounded))
+                                .font(.system(size: 14, weight: .regular, design: .rounded))
                             Spacer(minLength: 0)
                         }
                         .foregroundStyle(selection == tab ? Color.dashboardCoral : Color.tokenMuted)
-                        .padding(.horizontal, 12)
-                        .frame(height: 45)
+                        .padding(.horizontal, 10)
+                        .frame(height: 38)
                         .background {
                             if selection == tab {
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
                                     .fill(Color.dashboardCoral.opacity(0.075))
                                     .overlay {
-                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
                                             .stroke(Color.dashboardCoral.opacity(0.30), lineWidth: 1)
                                     }
                             }
@@ -148,21 +148,21 @@ private struct DashboardSidebar: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 6)
 
             Spacer()
 
             HStack(spacing: 8) {
                 Circle()
                     .fill(Color.dashboardGreen)
-                    .frame(width: 8, height: 8)
+                    .frame(width: 7, height: 7)
                     .shadow(color: Color.dashboardGreen.opacity(0.55), radius: 4)
                 Text("Live · \(version)")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
                     .foregroundStyle(Color.tokenMuted)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 18)
+            .padding(.horizontal, 13)
+            .padding(.bottom, 14)
         }
         .background(Color.white.opacity(0.045))
     }
@@ -195,7 +195,7 @@ private struct OverviewDashboard: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 14) {
+            VStack(spacing: 10) {
                 HStack(spacing: 14) {
                     MetricCard(
                         title: "TODAY",
@@ -220,7 +220,7 @@ private struct OverviewDashboard: View {
                                 .dashboardSectionTitle()
                             Spacer()
                             Text(TokenFormatter.compact(today.totalTokens))
-                                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                .font(.system(size: 14, weight: .semibold, design: .rounded))
                                 .foregroundStyle(Color.tokenMuted)
                                 .monospacedDigit()
                         }
@@ -271,20 +271,20 @@ private struct MetricCard: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(title).dashboardSectionTitle()
                     Text(value)
-                        .font(.system(size: 31, weight: .bold, design: .rounded))
+                        .font(.system(size: 25, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.tokenInk)
                         .monospacedDigit()
                     Text(subtitle)
-                        .font(.system(size: 14, weight: .regular, design: .rounded))
+                        .font(.system(size: 12, weight: .regular, design: .rounded))
                         .foregroundStyle(Color.tokenMuted)
                 }
                 Spacer()
                 Image(systemName: symbol)
-                    .font(.system(size: 22, weight: .medium))
+                    .font(.system(size: 19, weight: .medium))
                     .foregroundStyle(tint)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 138)
+        .frame(maxWidth: .infinity, minHeight: 112)
     }
 }
 
@@ -295,11 +295,11 @@ private struct PaceRow: View {
     var body: some View {
         HStack {
             Text(title)
-                .font(.system(size: 15, weight: .regular, design: .rounded))
+                .font(.system(size: 13, weight: .regular, design: .rounded))
                 .foregroundStyle(Color.tokenMuted)
             Spacer()
             Text(value)
-                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.tokenInk)
                 .monospacedDigit()
         }
@@ -319,9 +319,9 @@ private struct ActivityDashboard: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 14) {
+            VStack(spacing: 10) {
                 DashboardCard {
-                    VStack(alignment: .leading, spacing: 17) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Text("ACTIVITY · LAST 20 WEEKS")
                             .dashboardSectionTitle()
                         ActivityHeatmap(days: snapshot.daily)
@@ -336,11 +336,11 @@ private struct ActivityDashboard: View {
                 }
 
                 DashboardCard {
-                    VStack(alignment: .leading, spacing: 17) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Text("WEEKLY TREND · LAST 12 WEEKS")
                             .dashboardSectionTitle()
                         WeeklyCostChart(days: Array(snapshot.daily.suffix(84)))
-                            .frame(height: 180)
+                            .frame(height: 140)
                     }
                 }
             }
@@ -357,19 +357,19 @@ private struct ActivityStatCard: View {
     let tint: Color
 
     var body: some View {
-        DashboardCard(insets: 15) {
+        DashboardCard(insets: 12) {
             HStack(spacing: 14) {
                 Image(systemName: symbol)
-                    .font(.system(size: 18, weight: .medium))
+                    .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(tint)
-                    .frame(width: 38, height: 38)
-                    .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .frame(width: 32, height: 32)
+                    .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 13, weight: .regular, design: .rounded))
+                        .font(.system(size: 11, weight: .regular, design: .rounded))
                         .foregroundStyle(Color.tokenMuted)
                     Text(value)
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .font(.system(size: 17, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.tokenInk)
                         .monospacedDigit()
                 }
@@ -567,15 +567,15 @@ private struct ModelsDashboard: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 14) {
+            VStack(spacing: 10) {
                 DashboardCard {
-                    VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Text("COST BY MODEL · LAST 90 DAYS")
                             .dashboardSectionTitle()
                         HStack(spacing: 16) {
                             DonutChart(models: Array(visibleModels.prefix(8)), totalCost: totalCost)
-                                .frame(width: 170, height: 170)
-                            VStack(alignment: .leading, spacing: 13) {
+                                .frame(width: 150, height: 150)
+                            VStack(alignment: .leading, spacing: 9) {
                                 ForEach(Array(visibleModels.prefix(8).enumerated()), id: \.element.id) { index, model in
                                     ModelLegendRow(
                                         model: model,
@@ -587,7 +587,7 @@ private struct ModelsDashboard: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         Text("Total tokens: \(TokenFormatter.compact(totalInput)) input, \(TokenFormatter.compact(totalOutput)) output")
-                            .font(.system(size: 14, weight: .regular, design: .rounded))
+                            .font(.system(size: 12, weight: .regular, design: .rounded))
                             .foregroundStyle(Color.tokenMuted)
                     }
                 }
@@ -646,7 +646,7 @@ private struct DonutChart: View {
                     .foregroundStyle(Color.tokenMuted)
             }
         }
-        .padding(26)
+        .padding(16)
     }
 
     private func cumulativeFraction(before index: Int) -> CGFloat {
@@ -665,14 +665,14 @@ private struct ModelLegendRow: View {
         HStack(spacing: 9) {
             Circle().fill(color).frame(width: 10, height: 10)
             Text(UsageModelDisplayNameFormatter.compact(model.model))
-                .font(.system(size: 15, weight: .medium, design: .rounded))
+                .font(.system(size: 13, weight: .medium, design: .rounded))
                 .foregroundStyle(Color.tokenInk)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 5)
             AgentBadge(agent: model.agent)
             Text(dashboardPercent(percent))
-                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .font(.system(size: 12, weight: .medium, design: .rounded))
                 .foregroundStyle(Color.tokenMuted)
                 .monospacedDigit()
         }
@@ -689,13 +689,13 @@ private struct ModelBreakdownRow: View {
             HStack(spacing: 8) {
                 Circle().fill(color).frame(width: 9, height: 9)
                 Text(UsageModelDisplayNameFormatter.compact(model.model))
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
                     .foregroundStyle(Color.tokenInk)
                     .lineLimit(1)
                 AgentBadge(agent: model.agent)
                 Spacer()
                 Text("\(dashboardCNY(model.costMicrosCNY)) · \(dashboardPercent(percent))")
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(Color.tokenMuted)
                     .monospacedDigit()
             }
@@ -707,11 +707,11 @@ private struct ModelBreakdownRow: View {
             }
             .frame(height: 7)
             Text("\(model.requestCount.formatted()) req   in \(TokenFormatter.compact(model.inputTokens))   out \(TokenFormatter.compact(model.outputTokens))   cache \(TokenFormatter.compact(model.cacheReadTokens))")
-                .font(.system(size: 12, weight: .regular, design: .rounded))
+                .font(.system(size: 11, weight: .regular, design: .rounded))
                 .foregroundStyle(Color.tokenMuted)
                 .monospacedDigit()
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, 7)
     }
 }
 
@@ -767,17 +767,17 @@ private struct ProjectRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 9) {
                 Image(systemName: "folder")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Color.tokenMuted)
                 Text(name)
-                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
                     .foregroundStyle(Color.tokenInk)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 AgentBadge(agent: project.agent)
                 Spacer()
                 Text(dashboardCNY(project.costMicrosCNY))
-                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
                     .foregroundStyle(Color.tokenMuted)
                     .monospacedDigit()
             }
@@ -787,7 +787,7 @@ private struct ProjectRow: View {
                     Capsule().fill(color).frame(width: proxy.size.width * max(0.006, fraction))
                 }
             }
-            .frame(height: 8)
+            .frame(height: 6)
             HStack(spacing: 15) {
                 Text("\(project.requestCount.formatted()) req")
                 Text("\(TokenFormatter.compact(project.totalTokens)) tokens")
@@ -796,11 +796,11 @@ private struct ProjectRow: View {
                     Text("last \(lastUsed.formatted(.dateTime.year().month().day()))")
                 }
             }
-            .font(.system(size: 12, weight: .regular, design: .rounded))
+            .font(.system(size: 11, weight: .regular, design: .rounded))
             .foregroundStyle(Color.tokenMuted)
             .monospacedDigit()
         }
-        .padding(.vertical, 14)
+        .padding(.vertical, 10)
         .help(project.projectPath ?? "")
     }
 }
@@ -817,18 +817,18 @@ private struct SessionsDashboard: View {
     private var totalTokens: Int64 { sessions.reduce(0) { $0.saturatingAdd($1.totalTokens) } }
 
     var body: some View {
-        VStack(spacing: 14) {
-            DashboardCard(insets: 14) {
+        VStack(spacing: 10) {
+            DashboardCard(insets: 12) {
                 HStack {
                     dateButton(symbol: "chevron.left", offset: -1)
                     Spacer()
                     VStack(spacing: 5) {
                         Text(selectedDate.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits)))
-                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                            .font(.system(size: 17, weight: .bold, design: .rounded))
                             .foregroundStyle(Color.tokenInk)
                             .monospacedDigit()
                         Text("\(sessions.count) sessions · \(dashboardCNY(totalCost)) · \(TokenFormatter.compact(totalTokens)) tokens")
-                            .font(.system(size: 14, weight: .regular, design: .rounded))
+                            .font(.system(size: 12, weight: .regular, design: .rounded))
                             .foregroundStyle(Color.tokenMuted)
                             .monospacedDigit()
                     }
@@ -866,9 +866,9 @@ private struct SessionsDashboard: View {
             }
         } label: {
             Image(systemName: symbol)
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.tokenInk)
-                .frame(width: 46, height: 46)
+                .frame(width: 38, height: 38)
                 .background(Color.white.opacity(0.16), in: Circle())
                 .overlay { Circle().stroke(Color.white.opacity(0.48), lineWidth: 1) }
         }
@@ -894,15 +894,15 @@ private struct SessionRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(displayTitle)
-                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
                     .foregroundStyle(Color.tokenInk)
                     .lineLimit(1)
                 Spacer(minLength: 8)
                 Text(dashboardCNY(session.costMicrosCNY))
-                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.dashboardCoral)
                     .monospacedDigit()
             }
@@ -915,14 +915,14 @@ private struct SessionRow: View {
                 Spacer()
                 Text("\(session.requestCount.formatted()) req")
             }
-            .font(.system(size: 12, weight: .regular, design: .rounded))
+            .font(.system(size: 11, weight: .regular, design: .rounded))
             .foregroundStyle(Color.tokenMuted)
             .monospacedDigit()
 
             TokenCompositionBar(session: session)
                 .frame(height: 6)
 
-            HStack(spacing: 15) {
+            HStack(spacing: 10) {
                 Text("in \(TokenFormatter.compact(session.inputTokens))")
                 Text("out \(TokenFormatter.compact(session.outputTokens))")
                 Text("cw \(TokenFormatter.compact(session.cacheWriteTokens))")
@@ -942,7 +942,7 @@ private struct SessionRow: View {
             .foregroundStyle(Color.tokenMuted)
             .monospacedDigit()
         }
-        .padding(.vertical, 15)
+        .padding(.vertical, 11)
         .help(session.projectPath ?? session.sessionID)
     }
 
@@ -977,7 +977,7 @@ private struct DashboardCard<Content: View>: View {
     let insets: CGFloat
     @ViewBuilder let content: Content
 
-    init(insets: CGFloat = 16, @ViewBuilder content: () -> Content) {
+    init(insets: CGFloat = 13, @ViewBuilder content: () -> Content) {
         self.insets = insets
         self.content = content()
     }
@@ -986,12 +986,12 @@ private struct DashboardCard<Content: View>: View {
         content
             .padding(insets)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background(Color.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(Color.white.opacity(0.56), lineWidth: 1)
             }
-            .shadow(color: Color.black.opacity(0.035), radius: 15, y: 7)
+            .shadow(color: Color.black.opacity(0.035), radius: 10, y: 5)
     }
 }
 
@@ -1035,7 +1035,7 @@ private struct TokenBreakdownRows: View {
                 HStack(spacing: 12) {
                     Circle().fill(row.2).frame(width: 9, height: 9)
                     Text(row.0)
-                        .font(.system(size: 15, weight: .regular, design: .rounded))
+                        .font(.system(size: 13, weight: .regular, design: .rounded))
                         .foregroundStyle(Color.tokenMuted)
                         .frame(width: 90, alignment: .leading)
                     GeometryReader { proxy in
@@ -1046,7 +1046,7 @@ private struct TokenBreakdownRows: View {
                     }
                     .frame(height: 6)
                     Text(TokenFormatter.compact(row.1))
-                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundStyle(Color.tokenMuted)
                         .monospacedDigit()
                         .frame(width: 70, alignment: .trailing)
@@ -1164,7 +1164,7 @@ private extension Int64 {
 private extension Text {
     func dashboardSectionTitle() -> some View {
         self
-            .font(.system(size: 14, weight: .bold, design: .rounded))
+            .font(.system(size: 12, weight: .bold, design: .rounded))
             .tracking(1.0)
             .foregroundStyle(Color.tokenMuted)
     }
