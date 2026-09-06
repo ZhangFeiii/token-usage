@@ -169,6 +169,100 @@ final class LocalUsageCollectorTests: XCTestCase {
         XCTAssertTrue(unchangedReport.issues.isEmpty)
     }
 
+    func testCollectorCachesOpenCodeDatabaseUntilMainFileChanges() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TokenBallOpenCodeCacheTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let openCodeDatabaseURL = rootURL.appendingPathComponent("opencode.db")
+        let nowMilliseconds = Int64(Date().timeIntervalSince1970 * 1_000)
+        try createOpenCodeDatabase(at: openCodeDatabaseURL, nowMilliseconds: nowMilliseconds)
+
+        let repository = SQLiteUsageRepository(
+            databaseURL: rootURL.appendingPathComponent("usage.sqlite3")
+        )
+        let collector = LocalUsageCollector(
+            store: repository,
+            codexArchiveDirectoryURL: rootURL.appendingPathComponent("missing-codex"),
+            codexSessionDirectoryURL: rootURL.appendingPathComponent("missing-codex-sessions"),
+            openCodeDatabaseURL: openCodeDatabaseURL,
+            deepSeekHarnessSessionDirectoryURLs: [rootURL.appendingPathComponent("missing-dsh")],
+            jsonImportDirectoryURL: rootURL.appendingPathComponent("imports")
+        )
+
+        let firstReport = await collector.collect()
+        let unchangedReport = await collector.collect()
+
+        XCTAssertEqual(firstReport.discoveredRecordCount, 1)
+        XCTAssertTrue(firstReport.dataChanged)
+        XCTAssertEqual(unchangedReport.discoveredRecordCount, 0)
+        XCTAssertFalse(unchangedReport.dataChanged)
+
+        let changedDate = Date().addingTimeInterval(120)
+        let changedMilliseconds = Int64(changedDate.timeIntervalSince1970 * 1_000)
+        try updateOpenCodeDatabase(
+            at: openCodeDatabaseURL,
+            nowMilliseconds: changedMilliseconds
+        )
+        // Some filesystems expose only coarse mtime resolution. Set a known
+        // future timestamp so this test exercises the fingerprint even when
+        // the SQLite update happens within one clock tick.
+        try FileManager.default.setAttributes(
+            [.modificationDate: changedDate],
+            ofItemAtPath: openCodeDatabaseURL.path
+        )
+
+        let changedReport = await collector.collect()
+        XCTAssertEqual(changedReport.discoveredRecordCount, 1)
+        XCTAssertTrue(changedReport.dataChanged)
+        let snapshot = try await repository.fetchUsage(now: changedDate)
+        let openCode = try XCTUnwrap(snapshot.agents.first { $0.id == "opencode" })
+        XCTAssertEqual(openCode.todayTokens, 75)
+    }
+
+    func testAdditionalSourcesAreCalledOnEveryCollectionButStableRowsAreCached() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TokenBallAdditionalSourceCacheTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let source = CountingAdditionalSource(
+            sourceID: "future-agent",
+            records: [UsageRecord(
+                id: "future-cache-1",
+                agent: "future-agent",
+                model: "future-model",
+                freshInputTokens: 42,
+                outputTokens: 0,
+                recordedAt: Date()
+            )]
+        )
+        let repository = SQLiteUsageRepository(
+            databaseURL: rootURL.appendingPathComponent("usage.sqlite3")
+        )
+        let collector = LocalUsageCollector(
+            store: repository,
+            codexArchiveDirectoryURL: rootURL.appendingPathComponent("missing-codex"),
+            codexSessionDirectoryURL: rootURL.appendingPathComponent("missing-codex-sessions"),
+            openCodeDatabaseURL: rootURL.appendingPathComponent("missing-opencode.db"),
+            deepSeekHarnessSessionDirectoryURLs: [rootURL.appendingPathComponent("missing-dsh")],
+            jsonImportDirectoryURL: rootURL.appendingPathComponent("imports"),
+            additionalSources: [source]
+        )
+
+        let firstReport = await collector.collect()
+        let secondReport = await collector.collect()
+
+        XCTAssertEqual(firstReport.discoveredRecordCount, 1)
+        XCTAssertTrue(firstReport.dataChanged)
+        XCTAssertEqual(secondReport.discoveredRecordCount, 0)
+        XCTAssertFalse(secondReport.dataChanged)
+        let callCount = await source.callCount
+        XCTAssertEqual(callCount, 2)
+        let snapshot = try await repository.fetchUsage(now: Date())
+        XCTAssertEqual(snapshot.todayTotal, 42)
+    }
+
     func testCollectorImportsAllSelfOwnedSourcesAndPurgesLegacyCCSwitchRecords() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("TokenBallSelfOwnedTests-\(UUID().uuidString)", isDirectory: true)
@@ -261,11 +355,11 @@ final class LocalUsageCollectorTests: XCTestCase {
 
         // The legacy cc-switch record was purged: its 1000 tokens are absent.
         let secondReport = await collector.collect()
-        // OpenCode sessions are re-read and upserted on every refresh (their
-        // totals grow over time); fingerprinted sources stay quiet. The stable
-        // IDs keep the upsert from ever double counting in the snapshot.
-        XCTAssertEqual(secondReport.discoveredRecordCount, 1)
-        XCTAssertEqual(secondReport.importedRecordCount, 1)
+        // All local files are unchanged, so the collector skips every source
+        // read on the second pass and emits no snapshot invalidation.
+        XCTAssertEqual(secondReport.discoveredRecordCount, 0)
+        XCTAssertEqual(secondReport.importedRecordCount, 0)
+        XCTAssertFalse(secondReport.dataChanged)
         XCTAssertTrue(secondReport.issues.isEmpty)
         snapshot = try await repository.fetchUsage(now: now)
         XCTAssertEqual(snapshot.todayTotal, 310)
@@ -451,6 +545,23 @@ final class LocalUsageCollectorTests: XCTestCase {
         )
     }
 
+    private func updateOpenCodeDatabase(at databaseURL: URL, nowMilliseconds: Int64) throws {
+        var databasePointer: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &databasePointer), SQLITE_OK)
+        let database = try XCTUnwrap(databasePointer)
+        defer { sqlite3_close(database) }
+
+        try executeSQL(
+            """
+            UPDATE session
+            SET tokens_output = 20,
+                time_updated = \(nowMilliseconds)
+            WHERE id = 'opencode-session-1';
+            """,
+            database: database
+        )
+    }
+
     private func executeSQL(_ sql: String, database: OpaquePointer) throws {
         var message: UnsafeMutablePointer<CChar>?
         let result = sqlite3_exec(database, sql, nil, nil, &message)
@@ -467,6 +578,22 @@ private struct StaticDSHZstdDecompressor: ZstdDecompressing {
 
     func decompress(fileURL: URL) throws -> Data {
         Data(content.utf8)
+    }
+}
+
+private actor CountingAdditionalSource: UsageSourceProvider {
+    let sourceID: String
+    let records: [UsageRecord]
+    private(set) var callCount = 0
+
+    init(sourceID: String, records: [UsageRecord]) {
+        self.sourceID = sourceID
+        self.records = records
+    }
+
+    func collectRecords() async throws -> [UsageRecord] {
+        callCount += 1
+        return records
     }
 }
 

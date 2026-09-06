@@ -34,24 +34,33 @@ public struct UsageCollectionIssue: Equatable, Sendable {
 public struct UsageCollectionReport: Equatable, Sendable {
     public let discoveredRecordCount: Int
     public let importedRecordCount: Int
+    /// Whether a source or the store changed in a way that can affect an
+    /// aggregate snapshot. This lets callers keep a cached dashboard without
+    /// mistaking a successful no-op collection for new data.
+    public let dataChanged: Bool
     public let issues: [UsageCollectionIssue]
 
     public init(
         discoveredRecordCount: Int,
         importedRecordCount: Int,
-        issues: [UsageCollectionIssue]
+        issues: [UsageCollectionIssue],
+        dataChanged: Bool? = nil
     ) {
         self.discoveredRecordCount = discoveredRecordCount
         self.importedRecordCount = importedRecordCount
+        // Keep source-compatible behavior for custom UsageCollecting
+        // implementations that predate the explicit change signal.
+        self.dataChanged = dataChanged ?? (importedRecordCount > 0)
         self.issues = issues
     }
 }
 
 /// Imports TokenBall's self-owned local usage sources into its own SQLite
-/// store. Every source is collected on every refresh and deduplicated through
-/// stable record IDs, so the statistics no longer depend on any external
-/// accounting database. Source failures are reported independently and never
-/// thrown to the UI.
+/// store. Source files are fingerprinted after a successful read and only
+/// parsed again when their contents change. Extension providers are still
+/// called on every collection so they can provide live data; unchanged
+/// normalized results are skipped before import. Stable record IDs keep the
+/// statistics independent from any external accounting database.
 public actor LocalUsageCollector: UsageCollecting {
     public static var defaultCodexArchiveDirectoryURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -117,6 +126,10 @@ public actor LocalUsageCollector: UsageCollecting {
     private var importedCodexFingerprints: [URL: FileFingerprint] = [:]
     private var importedJSONFingerprints: [URL: FileFingerprint] = [:]
     private var importedDeepSeekHarnessFingerprints: [URL: FileFingerprint] = [:]
+    private var importedOpenCodeFingerprint: OpenCodeDatabaseFingerprint?
+    private var didInspectOpenCodeDatabase = false
+    private var importedAdditionalSourceRecords: [Int: [UsageRecord]] = [:]
+    private var didAttemptLegacyCCSwitchPurge = false
 
     public init(
         store: any UsageRecordStore,
@@ -146,58 +159,82 @@ public actor LocalUsageCollector: UsageCollecting {
         var processedFingerprints: [URL: FileFingerprint] = [:]
         var processedJSONFingerprints: [URL: FileFingerprint] = [:]
         var processedDeepSeekHarnessFingerprints: [URL: FileFingerprint] = [:]
+        var processedOpenCodeFingerprint: OpenCodeDatabaseFingerprint?
+        var processedAdditionalSourceRecords: [Int: [UsageRecord]] = [:]
+        var dataChanged = false
 
         // Migration: purge records imported from the removed CC Switch
-        // statistics database. Idempotent, so it also self-heals databases
-        // that were seeded before the decoupling.
-        do {
-            _ = try await store.removeRecords(
-                withIDPrefixes: [Self.legacyCCSwitchRecordIDPrefix]
-            )
-        } catch {
-            issues.append(
-                UsageCollectionIssue(
-                    source: "tokenball-store-cleanup",
-                    message: error.localizedDescription
+        // statistics database once per collector instance. The old source is
+        // no longer live, so repeating this DELETE on every 60-second refresh
+        // only adds avoidable database work.
+        if !didAttemptLegacyCCSwitchPurge {
+            do {
+                let removedCount = try await store.removeRecords(
+                    withIDPrefixes: [Self.legacyCCSwitchRecordIDPrefix]
                 )
-            )
+                didAttemptLegacyCCSwitchPurge = true
+                dataChanged = removedCount > 0
+            } catch {
+                issues.append(
+                    UsageCollectionIssue(
+                        source: "tokenball-store-cleanup",
+                        message: error.localizedDescription
+                    )
+                )
+            }
         }
 
-        collectCodexRecords(
+        dataChanged = collectCodexRecords(
             into: &records,
             processedFingerprints: &processedFingerprints,
             issues: &issues
-        )
-        do {
-            records.append(
-                contentsOf: try OpenCodeUsageReader(databaseURL: openCodeDatabaseURL)
-                    .readRecords()
-            )
-        } catch {
-            issues.append(
-                UsageCollectionIssue(
-                    source: "opencode",
-                    message: error.localizedDescription
+        ) || dataChanged
+
+        let currentOpenCodeFingerprint = openCodeDatabaseFingerprint()
+        if !didInspectOpenCodeDatabase || importedOpenCodeFingerprint != currentOpenCodeFingerprint {
+            do {
+                records.append(
+                    contentsOf: try OpenCodeUsageReader(databaseURL: openCodeDatabaseURL)
+                        .readRecords()
                 )
-            )
+                processedOpenCodeFingerprint = currentOpenCodeFingerprint
+                didInspectOpenCodeDatabase = true
+                dataChanged = true
+            } catch {
+                issues.append(
+                    UsageCollectionIssue(
+                        source: "opencode",
+                        message: error.localizedDescription
+                    )
+                )
+            }
         }
-        collectDeepSeekHarnessRecords(
+
+        dataChanged = collectDeepSeekHarnessRecords(
             into: &records,
             processedFingerprints: &processedDeepSeekHarnessFingerprints,
             issues: &issues
-        )
-        collectGenericJSONRecords(
+        ) || dataChanged
+        dataChanged = collectGenericJSONRecords(
             into: &records,
             processedFingerprints: &processedJSONFingerprints,
             issues: &issues
-        )
+        ) || dataChanged
 
         // Keep extension sources isolated: one unavailable or malformed agent
         // must not prevent the built-in sources (or another extension) from
-        // being imported during this refresh.
-        for source in additionalSources {
+        // being imported during this refresh. Providers are intentionally
+        // invoked every time; only unchanged normalized output is skipped.
+        for (index, source) in additionalSources.enumerated() {
             do {
-                records.append(contentsOf: try await source.collectRecords())
+                let sourceRecords = try await source.collectRecords()
+                let canonicalRecords = canonicalize(sourceRecords)
+                guard importedAdditionalSourceRecords[index] != canonicalRecords else {
+                    continue
+                }
+                records.append(contentsOf: canonicalRecords)
+                processedAdditionalSourceRecords[index] = canonicalRecords
+                dataChanged = true
             } catch {
                 let sourceID = source.sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
                 issues.append(
@@ -213,10 +250,15 @@ public actor LocalUsageCollector: UsageCollecting {
             importedCodexFingerprints.merge(processedFingerprints) { _, new in new }
             importedJSONFingerprints.merge(processedJSONFingerprints) { _, new in new }
             importedDeepSeekHarnessFingerprints.merge(processedDeepSeekHarnessFingerprints) { _, new in new }
+            if let processedOpenCodeFingerprint {
+                importedOpenCodeFingerprint = processedOpenCodeFingerprint
+            }
+            importedAdditionalSourceRecords.merge(processedAdditionalSourceRecords) { _, new in new }
             return UsageCollectionReport(
                 discoveredRecordCount: 0,
                 importedRecordCount: 0,
-                issues: issues
+                issues: issues,
+                dataChanged: dataChanged
             )
         }
 
@@ -225,10 +267,15 @@ public actor LocalUsageCollector: UsageCollecting {
             importedCodexFingerprints.merge(processedFingerprints) { _, new in new }
             importedJSONFingerprints.merge(processedJSONFingerprints) { _, new in new }
             importedDeepSeekHarnessFingerprints.merge(processedDeepSeekHarnessFingerprints) { _, new in new }
+            if let processedOpenCodeFingerprint {
+                importedOpenCodeFingerprint = processedOpenCodeFingerprint
+            }
+            importedAdditionalSourceRecords.merge(processedAdditionalSourceRecords) { _, new in new }
             return UsageCollectionReport(
                 discoveredRecordCount: records.count,
                 importedRecordCount: result.importedCount,
-                issues: issues
+                issues: issues,
+                dataChanged: dataChanged || result.importedCount > 0
             )
         } catch {
             issues.append(
@@ -240,7 +287,8 @@ public actor LocalUsageCollector: UsageCollecting {
             return UsageCollectionReport(
                 discoveredRecordCount: records.count,
                 importedRecordCount: 0,
-                issues: issues
+                issues: issues,
+                dataChanged: dataChanged
             )
         }
     }
@@ -249,7 +297,8 @@ public actor LocalUsageCollector: UsageCollecting {
         into records: inout [UsageRecord],
         processedFingerprints: inout [URL: FileFingerprint],
         issues: inout [UsageCollectionIssue]
-    ) {
+    ) -> Bool {
+        var didChange = false
         do {
             try fileManager.createDirectory(
                 at: jsonImportDirectoryURL,
@@ -259,7 +308,7 @@ public actor LocalUsageCollector: UsageCollecting {
             issues.append(
                 UsageCollectionIssue(source: "json-import", message: error.localizedDescription)
             )
-            return
+            return false
         }
 
         let keys: Set<URLResourceKey> = [
@@ -280,7 +329,7 @@ public actor LocalUsageCollector: UsageCollecting {
             issues.append(
                 UsageCollectionIssue(source: "json-import", message: error.localizedDescription)
             )
-            return
+            return false
         }
 
         for fileURL in files {
@@ -295,6 +344,7 @@ public actor LocalUsageCollector: UsageCollecting {
 
                 records.append(contentsOf: try genericJSONParser.parse(contentsOf: fileURL))
                 processedFingerprints[fileURL] = fingerprint
+                didChange = true
             } catch {
                 issues.append(
                     UsageCollectionIssue(
@@ -304,13 +354,15 @@ public actor LocalUsageCollector: UsageCollecting {
                 )
             }
         }
+        return didChange
     }
 
     private func collectCodexRecords(
         into records: inout [UsageRecord],
         processedFingerprints: inout [URL: FileFingerprint],
         issues: inout [UsageCollectionIssue]
-    ) {
+    ) -> Bool {
+        var didChange = false
         // The dashboard aggregates the latest 140 days. Older session files
         // never contribute to it, so skip them instead of parsing the entire
         // Codex history on every fresh install.
@@ -341,6 +393,7 @@ public actor LocalUsageCollector: UsageCollecting {
                 let sourceID = fileURL.deletingPathExtension().lastPathComponent
                 records.append(contentsOf: codexParser.parse(data: data, sourceID: sourceID))
                 processedFingerprints[fileURL] = fingerprint
+                didChange = true
             } catch {
                 issues.append(
                     UsageCollectionIssue(
@@ -350,6 +403,7 @@ public actor LocalUsageCollector: UsageCollecting {
                 )
             }
         }
+        return didChange
     }
 
     private func codexJSONLFiles() -> [URL] {
@@ -381,7 +435,8 @@ public actor LocalUsageCollector: UsageCollecting {
         into records: inout [UsageRecord],
         processedFingerprints: inout [URL: FileFingerprint],
         issues: inout [UsageCollectionIssue]
-    ) {
+    ) -> Bool {
+        var didChange = false
         let files = deepSeekHarnessSessionDirectoryURLs.flatMap(deepSeekHarnessFiles(in:))
             .sorted { $0.path < $1.path }
         for fileURL in files {
@@ -402,6 +457,7 @@ public actor LocalUsageCollector: UsageCollecting {
                 let data = try zstdDecompressor.decompress(fileURL: fileURL)
                 records.append(contentsOf: deepSeekHarnessParser.parse(data: data, sourceID: sourceID))
                 processedFingerprints[fileURL] = fingerprint
+                didChange = true
             } catch {
                 issues.append(
                     UsageCollectionIssue(
@@ -411,6 +467,7 @@ public actor LocalUsageCollector: UsageCollecting {
                 )
             }
         }
+        return didChange
     }
 
     private func deepSeekHarnessFiles(in rootURL: URL) -> [URL] {
@@ -424,9 +481,55 @@ public actor LocalUsageCollector: UsageCollecting {
             $0.lastPathComponent == "session.jsonl.zstd"
         }
     }
+
+    /// SQLite may keep the newest committed pages in a write-ahead log while
+    /// the main database file's mtime and size stay unchanged. Include the
+    /// database and WAL, but deliberately omit SQLite's `-shm`: opening a
+    /// read-only connection can update that lock/shared-memory sidecar even
+    /// when usage data did not change.
+    private func openCodeDatabaseFingerprint() -> OpenCodeDatabaseFingerprint {
+        OpenCodeDatabaseFingerprint(
+            database: fileFingerprint(at: openCodeDatabaseURL),
+            wal: fileFingerprint(at: URL(fileURLWithPath: openCodeDatabaseURL.path + "-wal"))
+        )
+    }
+
+    private func fileFingerprint(at url: URL) -> FileFingerprint? {
+        // FileManager attributes avoid URL resource-value caching. The same
+        // URL instance may be retained by an integration while SQLite is
+        // writing the database between timer ticks.
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              let fileType = attributes[.type] as? FileAttributeType,
+              fileType == .typeRegular
+        else {
+            return nil
+        }
+        return FileFingerprint(
+            size: (attributes[.size] as? NSNumber).map { Int(truncating: $0) } ?? 0,
+            modificationTime: (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        )
+    }
+
+    /// Providers are allowed to return rows in whatever order their source
+    /// uses. Canonicalizing by stable identity avoids treating a harmless
+    /// ordering change as a data change while preserving all row fields for
+    /// the upsert.
+    private func canonicalize(_ records: [UsageRecord]) -> [UsageRecord] {
+        records.sorted {
+            if $0.id != $1.id { return $0.id < $1.id }
+            if $0.recordedAt != $1.recordedAt { return $0.recordedAt < $1.recordedAt }
+            if $0.agent != $1.agent { return $0.agent < $1.agent }
+            return $0.model < $1.model
+        }
+    }
 }
 
 private struct FileFingerprint: Equatable, Sendable {
     let size: Int
     let modificationTime: TimeInterval
+}
+
+private struct OpenCodeDatabaseFingerprint: Equatable, Sendable {
+    let database: FileFingerprint?
+    let wal: FileFingerprint?
 }

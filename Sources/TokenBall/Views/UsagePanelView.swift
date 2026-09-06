@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import TokenBallCore
 
@@ -152,6 +153,12 @@ struct UsagePanelView: View {
 
             ZStack {
                 Rectangle().fill(.ultraThinMaterial)
+                // Put a mostly opaque system surface above the material: on a
+                // bright desktop wallpaper the material alone can wash out
+                // text and card boundaries. The remaining translucency keeps
+                // the frosted effect without letting wallpaper dominate it.
+                Rectangle()
+                    .fill(Color(nsColor: NSColor.windowBackgroundColor).opacity(0.72))
                 LinearGradient(
                     colors: [
                         Color.white.opacity(0.18),
@@ -178,7 +185,7 @@ struct UsagePanelView: View {
             .clipShape(RoundedRectangle(cornerRadius: metrics.panelCornerRadius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: metrics.panelCornerRadius, style: .continuous)
-                    .stroke(Color.white.opacity(0.58), lineWidth: 1)
+                    .stroke(Color.primary.opacity(0.16), lineWidth: 1)
             }
             .environment(\.dashboardLayoutMetrics, metrics)
         }
@@ -262,7 +269,7 @@ private struct DashboardSidebar: View {
                         .background {
                             if selection == tab {
                                 RoundedRectangle(cornerRadius: metrics.navigationCornerRadius, style: .continuous)
-                                    .fill(Color.dashboardCoral.opacity(0.075))
+                                    .fill(Color.dashboardCoral.opacity(0.105))
                                     .overlay {
                                         RoundedRectangle(cornerRadius: metrics.navigationCornerRadius, style: .continuous)
                                             .stroke(Color.dashboardCoral.opacity(0.30), lineWidth: 1)
@@ -289,7 +296,7 @@ private struct DashboardSidebar: View {
             .padding(.horizontal, metrics.sidebarHorizontalPadding)
             .padding(.bottom, max(11, 14 * metrics.density))
         }
-        .background(Color.white.opacity(0.045))
+        .background(Color.white.opacity(0.075))
     }
 }
 
@@ -401,6 +408,9 @@ private struct MetricCard: View {
                         .font(metrics.font(.metricValue))
                         .foregroundStyle(Color.tokenInk)
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .allowsTightening(true)
+                        .minimumScaleFactor(0.70)
                     Text(subtitle)
                         .font(metrics.font(.metricSubtitle))
                         .foregroundStyle(Color.tokenMuted)
@@ -440,13 +450,15 @@ private struct ActivityDashboard: View {
     let snapshot: DashboardSnapshot
     @Environment(\.dashboardLayoutMetrics) private var metrics
 
-    private var last90: ArraySlice<DailyDashboardUsage> { snapshot.daily.suffix(90) }
-    private var total90: Int64 { last90.reduce(0) { $0.saturatingAdd($1.costMicrosCNY) } }
-    private var activeDays: Int { last90.filter { $0.totalTokens > 0 || $0.requestCount > 0 }.count }
-    private var averageActiveDay: Int64 { activeDays > 0 ? total90 / Int64(activeDays) : 0 }
-    private var peakDay: Int64 { last90.map(\.costMicrosCNY).max() ?? 0 }
-
     var body: some View {
+        let last90 = Array(snapshot.daily.suffix(90))
+        let total90 = last90.reduce(Int64.zero) { $0.saturatingAdd($1.costMicrosCNY) }
+        let activeDays = last90.reduce(into: 0) { count, day in
+            if day.totalTokens > 0 || day.requestCount > 0 { count += 1 }
+        }
+        let averageActiveDay = activeDays > 0 ? total90 / Int64(activeDays) : 0
+        let peakDay = last90.map(\.costMicrosCNY).max() ?? 0
+
         ScrollView {
             VStack(spacing: metrics.pageSpacing) {
                 DashboardCard {
@@ -502,6 +514,9 @@ private struct ActivityStatCard: View {
                         .font(metrics.font(.smallStrong))
                         .foregroundStyle(Color.tokenInk)
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .allowsTightening(true)
+                        .minimumScaleFactor(0.72)
                 }
                 Spacer()
             }
@@ -512,8 +527,6 @@ private struct ActivityStatCard: View {
 private struct ActivityHeatmap: View {
     let days: [DailyDashboardUsage]
     @Environment(\.dashboardLayoutMetrics) private var metrics
-
-    private var values: [Int64] { gridDays.map(\.costMicrosCNY) }
 
     private var gridDays: [DailyDashboardUsage] {
         let calendar = Calendar.autoupdatingCurrent
@@ -528,8 +541,8 @@ private struct ActivityHeatmap: View {
         }
     }
 
-    private var thresholds: [Int64] {
-        let nonzero = values.filter { $0 > 0 }.sorted()
+    private func thresholds(for days: [DailyDashboardUsage]) -> [Int64] {
+        let nonzero = days.map(\.costMicrosCNY).filter { $0 > 0 }.sorted()
         guard !nonzero.isEmpty else { return [1, 2, 3, 4] }
         return [0.25, 0.50, 0.75, 0.90].map { quantile in
             let index = min(nonzero.count - 1, Int((Double(nonzero.count - 1) * quantile).rounded()))
@@ -537,38 +550,65 @@ private struct ActivityHeatmap: View {
         }
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: max(8, 11 * metrics.density)) {
-            HStack(spacing: max(6, 8 * metrics.density)) {
-                Color.clear.frame(width: 13 * metrics.typographyScale, height: 12 * metrics.typographyScale)
-                HStack(spacing: max(3, 4 * metrics.density)) {
-                    ForEach(0..<20, id: \.self) { week in
-                        Text(monthLabel(for: week))
-                            .font(metrics.font(.smallMedium))
-                            .foregroundStyle(Color.tokenMuted)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .lineLimit(1)
-                    }
+    private func monthMarkers(for days: [DailyDashboardUsage]) -> [ActivityMonthMarker] {
+        let calendar = Calendar.autoupdatingCurrent
+        var markers = (0..<20).compactMap { week -> ActivityMonthMarker? in
+            let index = week * 7
+            guard days.indices.contains(index) else { return nil }
+            let current = days[index].date
+            if week > 0 {
+                let previous = days[(week - 1) * 7].date
+                guard calendar.component(.month, from: current) != calendar.component(.month, from: previous) else {
+                    return nil
                 }
             }
+            return ActivityMonthMarker(
+                week: week,
+                title: current.formatted(.dateTime.month(.abbreviated))
+            )
+        }
 
-            HStack(alignment: .top, spacing: max(6, 8 * metrics.density)) {
-                VStack(spacing: max(3, 4 * metrics.density)) {
-                    ForEach(1...7, id: \.self) { weekday in
-                        Text(weekday == 2 ? "M" : weekday == 4 ? "W" : weekday == 6 ? "F" : "")
-                            .font(metrics.font(.smallMedium))
-                            .foregroundStyle(Color.tokenMuted)
-                            .frame(width: 13 * metrics.typographyScale, height: 15 * metrics.typographyScale)
-                    }
+        // The window can begin in the last few days of a month. In that case
+        // the synthetic week-zero marker and the next real month boundary are
+        // only one column apart and their labels overlap. Prefer the boundary
+        // marker because it represents the full month visible in the grid.
+        if markers.count > 1, markers[1].week - markers[0].week < 2 {
+            markers.removeFirst()
+        }
+        return markers
+    }
+
+    var body: some View {
+        let grid = gridDays
+        let levels = thresholds(for: grid)
+        let markers = monthMarkers(for: grid)
+        let columnSpacing = max(3, 4 * metrics.density)
+        let rowSpacing = max(3, 4 * metrics.density)
+        let weekdayLabelWidth = 13 * metrics.typographyScale
+
+        HStack(alignment: .top, spacing: max(6, 8 * metrics.density)) {
+            VStack(spacing: rowSpacing) {
+                Color.clear.frame(height: max(14, 17 * metrics.typographyScale))
+                ForEach(1...7, id: \.self) { weekday in
+                    Text(weekday == 2 ? "M" : weekday == 4 ? "W" : weekday == 6 ? "F" : "")
+                        .font(metrics.font(.smallMedium))
+                        .foregroundStyle(Color.tokenMuted)
+                        .frame(width: weekdayLabelWidth, height: 15 * metrics.typographyScale)
                 }
+            }
+            .frame(width: weekdayLabelWidth)
 
-                HStack(alignment: .top, spacing: max(3, 4 * metrics.density)) {
+            VStack(spacing: rowSpacing) {
+                HeatmapMonthHeader(markers: markers, columnSpacing: columnSpacing)
+                    .frame(height: max(14, 17 * metrics.typographyScale))
+
+                HStack(alignment: .top, spacing: columnSpacing) {
                     ForEach(0..<20, id: \.self) { week in
-                        VStack(spacing: max(3, 4 * metrics.density)) {
+                        VStack(spacing: rowSpacing) {
                             ForEach(0..<7, id: \.self) { day in
-                                let point = gridDays[week * 7 + day]
+                                let point = grid[week * 7 + day]
                                 RoundedRectangle(cornerRadius: max(2, 3 * metrics.density), style: .continuous)
-                                    .fill(color(for: point.costMicrosCNY))
+                                    .fill(color(for: point.costMicrosCNY, thresholds: levels))
                                     .frame(maxWidth: .infinity)
                                     .aspectRatio(1, contentMode: .fit)
                                     .overlay {
@@ -583,25 +623,25 @@ private struct ActivityHeatmap: View {
                         }
                     }
                 }
-            }
-
-            HStack(spacing: max(5, 7 * metrics.density)) {
-                Text("Less")
-                ForEach(0..<5, id: \.self) { level in
-                    RoundedRectangle(cornerRadius: max(2, 3 * metrics.density), style: .continuous)
-                        .fill(legendColor(level: level))
-                        .frame(width: 15 * metrics.typographyScale, height: 15 * metrics.typographyScale)
+                HStack(spacing: max(5, 7 * metrics.density)) {
+                    Text("Less")
+                    ForEach(0..<5, id: \.self) { level in
+                        RoundedRectangle(cornerRadius: max(2, 3 * metrics.density), style: .continuous)
+                            .fill(legendColor(level: level))
+                            .frame(width: 15 * metrics.typographyScale, height: 15 * metrics.typographyScale)
+                    }
+                    Text("More")
                 }
-                Text("More")
+                .font(metrics.font(.body))
+                .foregroundStyle(Color.tokenMuted)
+                .padding(.leading, max(0, 8 * metrics.density))
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .font(metrics.font(.body))
-            .foregroundStyle(Color.tokenMuted)
-            .padding(.leading, 21 * metrics.density)
         }
     }
 
-    private func color(for value: Int64) -> Color {
-        guard value > 0 else { return Color.primary.opacity(0.075) }
+    private func color(for value: Int64, thresholds: [Int64]) -> Color {
+        guard value > 0 else { return Color.primary.opacity(0.11) }
         if value <= thresholds[0] { return Color.dashboardCoral.opacity(0.25) }
         if value <= thresholds[1] { return Color.dashboardCoral.opacity(0.43) }
         if value <= thresholds[2] { return Color.dashboardCoral.opacity(0.64) }
@@ -610,26 +650,57 @@ private struct ActivityHeatmap: View {
 
     private func legendColor(level: Int) -> Color {
         switch level {
-        case 0: Color.primary.opacity(0.075)
+        case 0: Color.primary.opacity(0.11)
         case 1: Color.dashboardCoral.opacity(0.25)
         case 2: Color.dashboardCoral.opacity(0.43)
         case 3: Color.dashboardCoral.opacity(0.64)
         default: Color.dashboardCoral
         }
     }
+}
 
-    private func monthLabel(for week: Int) -> String {
-        let calendar = Calendar.autoupdatingCurrent
-        let index = week * 7
-        guard gridDays.indices.contains(index) else { return "" }
-        let current = gridDays[index].date
-        if week > 0 {
-            let previous = gridDays[(week - 1) * 7].date
-            guard calendar.component(.month, from: current) != calendar.component(.month, from: previous) else {
-                return ""
+private struct ActivityMonthMarker: Identifiable {
+    let week: Int
+    let title: String
+
+    var id: Int { week }
+}
+
+/// Month labels are anchored to the first week of each month. Keeping them in
+/// an unconstrained overlay avoids the per-week `Text` frames truncating to
+/// ellipses when the heatmap is rendered on a narrow panel.
+private struct HeatmapMonthHeader: View {
+    let markers: [ActivityMonthMarker]
+    let columnSpacing: CGFloat
+    @Environment(\.dashboardLayoutMetrics) private var metrics
+
+    var body: some View {
+        GeometryReader { proxy in
+            let columnCount = 20
+            let columnWidth = max(
+                0,
+                (proxy.size.width - columnSpacing * CGFloat(columnCount - 1)) / CGFloat(columnCount)
+            )
+            ZStack(alignment: .leading) {
+                ForEach(markers) { marker in
+                    Text(marker.title)
+                        .font(metrics.font(.smallMedium))
+                        .foregroundStyle(Color.tokenMuted)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .allowsTightening(true)
+                        .offset(x: markerOffset(for: marker.week, columnWidth: columnWidth, width: proxy.size.width))
+                }
             }
         }
-        return current.formatted(.dateTime.month(.abbreviated))
+    }
+
+    private func markerOffset(for week: Int, columnWidth: CGFloat, width: CGFloat) -> CGFloat {
+        let rawOffset = CGFloat(week) * (columnWidth + columnSpacing)
+        // Month abbreviations are at most a few dozen points wide at this
+        // density. Reserve a small right inset so the final marker remains
+        // fully visible instead of being clipped by the header geometry.
+        return min(max(0, rawOffset), max(0, width - 38 * metrics.typographyScale))
     }
 }
 
@@ -637,45 +708,61 @@ private struct WeeklyCostChart: View {
     let days: [DailyDashboardUsage]
     @Environment(\.dashboardLayoutMetrics) private var metrics
 
-    private var weeks: [[DailyDashboardUsage]] {
+    private func points(from days: [DailyDashboardUsage]) -> [WeeklyCostPoint] {
         stride(from: 0, to: days.count, by: 7).map { start in
-            Array(days[start..<min(start + 7, days.count)])
+            let end = min(start + 7, days.count)
+            let week = days[start..<end]
+            let total = week.reduce(Int64.zero) { $0.saturatingAdd($1.costMicrosCNY) }
+            return WeeklyCostPoint(
+                index: start / 7,
+                startDate: week.first?.date,
+                total: total
+            )
         }
     }
 
-    private var totals: [Int64] {
-        weeks.map { $0.reduce(0) { $0.saturatingAdd($1.costMicrosCNY) } }
-    }
-
-    private var maximum: Double { max(1, Double(totals.max() ?? 0)) }
-
     var body: some View {
+        let weeklyPoints = points(from: days)
+        let maximum = max(1, Double(weeklyPoints.map(\.total).max() ?? 0))
+
         GeometryReader { proxy in
             HStack(alignment: .bottom, spacing: max(7, 10 * metrics.density)) {
-                ForEach(Array(weeks.enumerated()), id: \.offset) { index, week in
-                    let total = totals[index]
-                    let height = total == 0 ? 4 : max(8, (proxy.size.height - 34) * CGFloat(Double(total) / maximum))
+                ForEach(weeklyPoints) { point in
+                    let height = point.total == 0 ? 4 : max(8, (proxy.size.height - 34) * CGFloat(Double(point.total) / maximum))
                     VStack(spacing: max(4, 6 * metrics.density)) {
                         Spacer(minLength: 0)
-                        if total > 0 {
-                            Text(shortCNY(total))
-                                .font(metrics.font(.chart))
-                                .foregroundStyle(Color.tokenMuted)
-                                .lineLimit(1)
-                        }
-                        RoundedRectangle(cornerRadius: max(4, 6 * metrics.density), style: .continuous)
-                            .fill(total == 0 ? Color.primary.opacity(0.075) : Color.dashboardCoral.opacity(index == weeks.count - 1 ? 0.95 : 0.55))
-                            .frame(height: height)
-                        Text(week.first?.date.formatted(.dateTime.month().day()) ?? "")
+                        Text(point.total > 0 ? shortCNY(point.total) : " ")
                             .font(metrics.font(.chart))
-                            .foregroundStyle(index == weeks.count - 1 ? Color.dashboardCoral : Color.tokenMuted)
+                            .foregroundStyle(Color.tokenMuted)
+                            .lineLimit(1)
+                            .allowsTightening(true)
+                            .minimumScaleFactor(0.50)
+                            .frame(maxWidth: .infinity)
+                        RoundedRectangle(cornerRadius: max(4, 6 * metrics.density), style: .continuous)
+                            .fill(point.total == 0 ? Color.primary.opacity(0.11) : Color.dashboardCoral.opacity(point.index == weeklyPoints.count - 1 ? 0.95 : 0.55))
+                            .frame(height: height)
+                        Text(shortChartDate(point.startDate))
+                            .font(metrics.font(.chart))
+                            .foregroundStyle(point.index == weeklyPoints.count - 1 ? Color.dashboardCoral : Color.tokenMuted)
+                            .lineLimit(1)
+                            .allowsTightening(true)
+                            .minimumScaleFactor(0.55)
+                            .frame(maxWidth: .infinity)
                     }
                     .frame(maxWidth: .infinity)
-                    .help("\(dashboardCNY(total))")
+                    .help("\(dashboardCNY(point.total))")
                 }
             }
         }
     }
+}
+
+private struct WeeklyCostPoint: Identifiable {
+    let index: Int
+    let startDate: Date?
+    let total: Int64
+
+    var id: Int { index }
 }
 
 // MARK: - Models
@@ -684,21 +771,17 @@ private struct ModelsDashboard: View {
     let models: [DashboardModelUsage]
     @Environment(\.dashboardLayoutMetrics) private var metrics
 
-    private var visibleModels: [DashboardModelUsage] {
-        models.filter { $0.totalTokens > 0 || $0.costMicrosCNY > 0 }
-    }
-
-    private var totalCost: Int64 {
-        visibleModels.reduce(0) { $0.saturatingAdd($1.costMicrosCNY) }
-    }
-
-    private var totalInput: Int64 {
-        visibleModels.reduce(0) { $0.saturatingAdd($1.inputTokens).saturatingAdd($1.cacheReadTokens).saturatingAdd($1.cacheWriteTokens) }
-    }
-
-    private var totalOutput: Int64 { visibleModels.reduce(0) { $0.saturatingAdd($1.outputTokens) } }
-
     var body: some View {
+        let visibleModels = models.filter { $0.totalTokens > 0 || $0.costMicrosCNY > 0 }
+        let topModels = Array(visibleModels.prefix(8))
+        let totalCost = visibleModels.reduce(Int64.zero) { $0.saturatingAdd($1.costMicrosCNY) }
+        let totalInput = visibleModels.reduce(Int64.zero) {
+            $0.saturatingAdd($1.inputTokens)
+                .saturatingAdd($1.cacheReadTokens)
+                .saturatingAdd($1.cacheWriteTokens)
+        }
+        let totalOutput = visibleModels.reduce(Int64.zero) { $0.saturatingAdd($1.outputTokens) }
+
         ScrollView {
             VStack(spacing: metrics.pageSpacing) {
                 DashboardCard {
@@ -706,10 +789,10 @@ private struct ModelsDashboard: View {
                         Text("COST BY MODEL · LAST 90 DAYS")
                             .dashboardSectionTitle()
                         HStack(spacing: max(12, 16 * metrics.density)) {
-                            DonutChart(models: Array(visibleModels.prefix(8)), totalCost: totalCost)
+                            DonutChart(models: topModels, totalCost: totalCost)
                                 .frame(width: metrics.donutSize, height: metrics.donutSize)
                             VStack(alignment: .leading, spacing: max(6, 9 * metrics.density)) {
-                                ForEach(Array(visibleModels.prefix(8).enumerated()), id: \.element.id) { index, model in
+                                ForEach(Array(topModels.enumerated()), id: \.element.id) { index, model in
                                     ModelLegendRow(
                                         model: model,
                                         color: dashboardPalette[index % dashboardPalette.count],
@@ -726,7 +809,7 @@ private struct ModelsDashboard: View {
                 }
 
                 DashboardCard {
-                    VStack(alignment: .leading, spacing: max(6, 8 * metrics.density)) {
+                    LazyVStack(alignment: .leading, spacing: max(6, 8 * metrics.density)) {
                         Text("BREAKDOWN")
                             .dashboardSectionTitle()
                             .padding(.bottom, max(4, 5 * metrics.density))
@@ -755,17 +838,19 @@ private struct DonutChart: View {
     @Environment(\.dashboardLayoutMetrics) private var metrics
 
     var body: some View {
+        let slices = donutSlices
+
         ZStack {
             Circle()
                 .stroke(Color.primary.opacity(0.06), lineWidth: 34 * metrics.density)
-            ForEach(Array(models.enumerated()), id: \.element.id) { index, model in
+            ForEach(slices) { slice in
                 Circle()
                     .trim(
-                        from: cumulativeFraction(before: index),
-                        to: cumulativeFraction(before: index + 1)
+                        from: slice.start,
+                        to: slice.end
                     )
                     .stroke(
-                        dashboardPalette[index % dashboardPalette.count],
+                        dashboardPalette[slice.index % dashboardPalette.count],
                         style: StrokeStyle(lineWidth: 34 * metrics.density, lineCap: .butt)
                     )
                     .rotationEffect(.degrees(-90))
@@ -775,6 +860,10 @@ private struct DonutChart: View {
                     .font(metrics.font(.donutValue))
                     .foregroundStyle(Color.tokenInk)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .allowsTightening(true)
+                    .minimumScaleFactor(0.55)
+                    .frame(maxWidth: .infinity)
                 Text("total")
                     .font(metrics.font(.donutLabel))
                     .foregroundStyle(Color.tokenMuted)
@@ -783,11 +872,27 @@ private struct DonutChart: View {
         .padding(16 * metrics.density)
     }
 
-    private func cumulativeFraction(before index: Int) -> CGFloat {
-        guard totalCost > 0, index > 0 else { return 0 }
-        let value = models.prefix(index).reduce(Int64.zero) { $0.saturatingAdd($1.costMicrosCNY) }
-        return CGFloat(min(1, Double(value) / Double(totalCost)))
+    private var donutSlices: [DonutSlice] {
+        guard totalCost > 0 else { return [] }
+        var start: CGFloat = 0
+        return models.enumerated().map { index, model in
+            let end = min(1, start + CGFloat(fraction(model.costMicrosCNY, of: totalCost)))
+            defer { start = end }
+            return DonutSlice(
+                id: "\(model.id)-\(index)",
+                index: index,
+                start: start,
+                end: end
+            )
+        }
     }
+}
+
+private struct DonutSlice: Identifiable {
+    let id: String
+    let index: Int
+    let start: CGFloat
+    let end: CGFloat
 }
 
 private struct ModelLegendRow: View {
@@ -804,12 +909,17 @@ private struct ModelLegendRow: View {
                 .foregroundStyle(Color.tokenInk)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .allowsTightening(true)
+                .minimumScaleFactor(0.68)
+                .layoutPriority(1)
             Spacer(minLength: 5)
             AgentBadge(agent: model.agent)
             Text(dashboardPercent(percent))
                 .font(metrics.font(.smallMedium))
                 .foregroundStyle(Color.tokenMuted)
                 .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
     }
 }
@@ -828,16 +938,23 @@ private struct ModelBreakdownRow: View {
                     .font(metrics.font(.bodyStrong))
                     .foregroundStyle(Color.tokenInk)
                     .lineLimit(1)
+                    .allowsTightening(true)
+                    .minimumScaleFactor(0.72)
+                    .layoutPriority(1)
                 AgentBadge(agent: model.agent)
                 Spacer()
                 Text("\(dashboardCNY(model.costMicrosCNY)) · \(dashboardPercent(percent))")
                     .font(metrics.font(.bodyMedium))
                     .foregroundStyle(Color.tokenMuted)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .allowsTightening(true)
+                    .minimumScaleFactor(0.62)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.07))
+                    Capsule().fill(Color.primary.opacity(0.12))
                     Capsule().fill(color).frame(width: proxy.size.width * max(0.006, percent))
                 }
             }
@@ -857,13 +974,12 @@ private struct ProjectsDashboard: View {
     let projects: [DashboardProjectUsage]
     @Environment(\.dashboardLayoutMetrics) private var metrics
 
-    private var visibleProjects: [DashboardProjectUsage] {
-        projects.filter { $0.projectPath != nil && ($0.totalTokens > 0 || $0.costMicrosCNY > 0) }
-    }
-
-    private var maximumCost: Double { max(1, Double(visibleProjects.map(\.costMicrosCNY).max() ?? 0)) }
-
     var body: some View {
+        let visibleProjects = projects.filter {
+            $0.projectPath != nil && ($0.totalTokens > 0 || $0.costMicrosCNY > 0)
+        }
+        let maximumCost = max(1, Double(visibleProjects.map(\.costMicrosCNY).max() ?? 0))
+
         DashboardCard {
             VStack(alignment: .leading, spacing: metrics.pageSpacing) {
                 Text("TOP PROJECTS · LAST 90 DAYS")
@@ -912,16 +1028,23 @@ private struct ProjectRow: View {
                     .foregroundStyle(Color.tokenInk)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .allowsTightening(true)
+                    .minimumScaleFactor(0.72)
+                    .layoutPriority(1)
                 AgentBadge(agent: project.agent)
                 Spacer()
                 Text(dashboardCNY(project.costMicrosCNY))
                     .font(metrics.font(.bodyMedium))
                     .foregroundStyle(Color.tokenMuted)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .allowsTightening(true)
+                    .minimumScaleFactor(0.65)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.07))
+                    Capsule().fill(Color.primary.opacity(0.12))
                     Capsule().fill(color).frame(width: proxy.size.width * max(0.006, fraction))
                 }
             }
@@ -937,6 +1060,9 @@ private struct ProjectRow: View {
             .font(metrics.font(.small))
             .foregroundStyle(Color.tokenMuted)
             .monospacedDigit()
+            .lineLimit(1)
+            .allowsTightening(true)
+            .minimumScaleFactor(0.60)
         }
         .padding(.vertical, max(8, 10 * metrics.density))
         .help(project.projectPath ?? "")
@@ -951,11 +1077,11 @@ private struct SessionsDashboard: View {
     let onSelectDate: (Date) -> Void
     @Environment(\.dashboardLayoutMetrics) private var metrics
 
-    private var sessions: [DashboardSessionUsage] { snapshot.sessions }
-    private var totalCost: Int64 { sessions.reduce(0) { $0.saturatingAdd($1.costMicrosCNY) } }
-    private var totalTokens: Int64 { sessions.reduce(0) { $0.saturatingAdd($1.totalTokens) } }
-
     var body: some View {
+        let sessions = snapshot.sessions
+        let totalCost = sessions.reduce(Int64.zero) { $0.saturatingAdd($1.costMicrosCNY) }
+        let totalTokens = sessions.reduce(Int64.zero) { $0.saturatingAdd($1.totalTokens) }
+
         VStack(spacing: metrics.pageSpacing) {
             DashboardCard(insets: 12) {
                 HStack {
@@ -966,10 +1092,16 @@ private struct SessionsDashboard: View {
                             .font(metrics.font(.sessionDate))
                             .foregroundStyle(Color.tokenInk)
                             .monospacedDigit()
+                            .lineLimit(1)
+                            .allowsTightening(true)
+                            .minimumScaleFactor(0.70)
                         Text("\(sessions.count) sessions · \(dashboardCNY(totalCost)) · \(TokenFormatter.compact(totalTokens)) tokens")
                             .font(metrics.font(.metricSubtitle))
                             .foregroundStyle(Color.tokenMuted)
                             .monospacedDigit()
+                            .lineLimit(1)
+                            .allowsTightening(true)
+                            .minimumScaleFactor(0.58)
                     }
                     Spacer()
                     dateButton(symbol: "chevron.right", offset: 1)
@@ -1008,8 +1140,8 @@ private struct SessionsDashboard: View {
                 .font(metrics.iconFont(size: 15, weight: .semibold))
                 .foregroundStyle(Color.tokenInk)
                 .frame(width: 38 * metrics.density, height: 38 * metrics.density)
-                .background(Color.white.opacity(0.16), in: Circle())
-                .overlay { Circle().stroke(Color.white.opacity(0.48), lineWidth: 1) }
+                .background(Color.white.opacity(0.20), in: Circle())
+                .overlay { Circle().stroke(Color.primary.opacity(0.18), lineWidth: 1) }
         }
         .buttonStyle(.plain)
     }
@@ -1040,11 +1172,18 @@ private struct SessionRow: View {
                     .font(metrics.font(.bodyStrong))
                     .foregroundStyle(Color.tokenInk)
                     .lineLimit(1)
+                    .allowsTightening(true)
+                    .minimumScaleFactor(0.72)
+                    .layoutPriority(1)
                 Spacer(minLength: 8)
                 Text(dashboardCNY(session.costMicrosCNY))
                     .font(metrics.font(.smallStrong))
                     .foregroundStyle(Color.dashboardCoral)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .allowsTightening(true)
+                    .minimumScaleFactor(0.65)
+                    .fixedSize(horizontal: true, vertical: false)
             }
 
             HStack(spacing: max(6, 8 * metrics.density)) {
@@ -1106,7 +1245,7 @@ private struct TokenCompositionBar: View {
                 Rectangle().fill(Color.dashboardBlue).frame(width: proxy.size.width * CGFloat(Double(session.cacheReadTokens) / total))
             }
             .clipShape(Capsule())
-            .background(Color.primary.opacity(0.07), in: Capsule())
+            .background(Color.primary.opacity(0.12), in: Capsule())
         }
     }
 }
@@ -1127,10 +1266,10 @@ private struct DashboardCard<Content: View>: View {
         content
             .padding(insets.map { $0 * metrics.density } ?? metrics.cardInsets)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.white.opacity(0.16), in: RoundedRectangle(cornerRadius: metrics.cardRadius, style: .continuous))
+            .background(Color.white.opacity(0.22), in: RoundedRectangle(cornerRadius: metrics.cardRadius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: metrics.cardRadius, style: .continuous)
-                    .stroke(Color.white.opacity(0.56), lineWidth: 1)
+                    .stroke(Color.primary.opacity(0.16), lineWidth: 1)
             }
             .shadow(color: Color.black.opacity(0.035), radius: max(7, 10 * metrics.density), y: max(3, 5 * metrics.density))
     }
@@ -1148,9 +1287,12 @@ private struct AgentBadge: View {
             .font(metrics.font(.badge))
             .tracking(0.7 * metrics.typographyScale)
             .foregroundStyle(tint)
+            .lineLimit(1)
+            .allowsTightening(true)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 7 * metrics.density)
             .padding(.vertical, 3 * metrics.density)
-            .background(tint.opacity(0.11), in: RoundedRectangle(cornerRadius: max(5, 6 * metrics.density), style: .continuous))
+            .background(tint.opacity(0.16), in: RoundedRectangle(cornerRadius: max(5, 6 * metrics.density), style: .continuous))
     }
 }
 
@@ -1183,7 +1325,7 @@ private struct TokenBreakdownRows: View {
                         .frame(width: 90 * metrics.density, alignment: .leading)
                     GeometryReader { proxy in
                         ZStack(alignment: .leading) {
-                            Capsule().fill(Color.primary.opacity(0.07))
+                            Capsule().fill(Color.primary.opacity(0.12))
                             Capsule().fill(row.2.opacity(0.72)).frame(width: proxy.size.width * CGFloat(Double(row.1) / maximum))
                         }
                     }
@@ -1290,6 +1432,12 @@ private func shortCNY(_ micros: Int64) -> String {
     if amount >= 1_000 { return String(format: "¥%.1fk", amount / 1_000) }
     if amount >= 100 { return String(format: "¥%.0f", amount) }
     return String(format: "¥%.1f", amount)
+}
+
+private func shortChartDate(_ date: Date?) -> String {
+    guard let date else { return "" }
+    let calendar = Calendar.autoupdatingCurrent
+    return "\(calendar.component(.month, from: date))/\(calendar.component(.day, from: date))"
 }
 
 private func fraction(_ value: Int64, of total: Int64) -> Double {

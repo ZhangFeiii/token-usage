@@ -23,9 +23,9 @@ enum AgentAppearance {
 
 extension Color {
     // Semantic ink keeps the translucent surfaces legible in both appearances.
-    static let tokenInk = Color.primary.opacity(0.84)
-    static let tokenMuted = Color.secondary.opacity(0.78)
-    static let tokenLine = Color.primary.opacity(0.10)
+    static let tokenInk = Color.primary.opacity(0.94)
+    static let tokenMuted = Color.primary.opacity(0.66)
+    static let tokenLine = Color.primary.opacity(0.15)
     static let tokenSurface = Color.white.opacity(0.10)
     static let tokenSpecular = Color.white.opacity(0.56)
     static let tokenBlue = Color(red: 0.18, green: 0.49, blue: 0.94)

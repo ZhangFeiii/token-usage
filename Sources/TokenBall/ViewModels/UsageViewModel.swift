@@ -19,6 +19,10 @@ final class UsageViewModel: ObservableObject {
     private let exchangeRateProvider: any ExchangeRateProviding
     private var hasStarted = false
     private var autoRefreshTask: Task<Void, Never>?
+    /// `isRefreshing` is UI state; this separate flag prevents overlapping
+    /// timer/manual work without publishing a spinner transition for every
+    /// timer tick.
+    private var refreshInProgress = false
     private var usdToCNYRate = 7.2
 
     var todayCostMicrosCNY: Int64 {
@@ -44,52 +48,109 @@ final class UsageViewModel: ObservableObject {
     func startIfNeeded() async {
         guard !hasStarted else { return }
         hasStarted = true
-        await refresh()
+        // The first load must always populate both snapshots, even when the
+        // collector has no new records yet.
+        await refresh(forceRead: true)
 
         autoRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled, let self else { return }
-                await self.refresh()
+                await self.refresh(forceRead: false)
             }
         }
     }
 
     func refresh() async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
+        await refresh(forceRead: true)
+    }
+
+    /// Refreshes source data and, when needed, re-reads the aggregate
+    /// snapshots. Timer-driven refreshes pass `false` so a quiet minute does
+    /// not repeat the dashboard's full 140-day SQLite aggregation; explicit
+    /// user refreshes always pass `true`.
+    private func refresh(forceRead: Bool) async {
+        guard !refreshInProgress else { return }
+        refreshInProgress = true
+        // Automatic collection is intentionally silent. A timer tick that
+        // discovers no data/rate change should not cause a view-wide redraw.
+        if forceRead, !isRefreshing {
+            isRefreshing = true
+        }
         defer {
-            isRefreshing = false
-            hasLoaded = true
+            refreshInProgress = false
+            if isRefreshing {
+                isRefreshing = false
+            }
+            if !hasLoaded {
+                hasLoaded = true
+            }
         }
 
         let now = Date()
         let exchangeRate = await exchangeRateProvider.currentRate(now: now)
-        usdToCNYRate = exchangeRate.rate
-        exchangeRateUpdatedAt = exchangeRate.updatedAt
-        isUsingFallbackExchangeRate = exchangeRate.isFallback
+        let exchangeRateChanged = exchangeRate.rate != usdToCNYRate
+            || exchangeRate.isFallback != isUsingFallbackExchangeRate
+        if usdToCNYRate != exchangeRate.rate {
+            usdToCNYRate = exchangeRate.rate
+        }
+        if exchangeRateUpdatedAt != exchangeRate.updatedAt {
+            exchangeRateUpdatedAt = exchangeRate.updatedAt
+        }
+        if isUsingFallbackExchangeRate != exchangeRate.isFallback {
+            isUsingFallbackExchangeRate = exchangeRate.isFallback
+        }
 
         // Collection is best-effort: each source reports its own failure and the
         // UI still fetches the last successfully imported TokenBall snapshot.
+        // A repository without a collector remains externally mutable, so it
+        // retains the previous always-refresh behavior for timer ticks.
+        let dataChanged: Bool
         if let collector {
-            _ = await collector.collect()
+            let report = await collector.collect()
+            dataChanged = report.dataChanged
+        } else {
+            dataChanged = true
+        }
+
+        guard forceRead || !hasLoaded || dataChanged || exchangeRateChanged else {
+            return
         }
 
         do {
-            snapshot = try await repository.fetchUsage(now: now, calendar: .current)
-            dashboard = try await repository.fetchDashboard(
+            let newSnapshot = try await repository.fetchUsage(now: now, calendar: .current)
+            let newDashboard = try await repository.fetchDashboard(
                 now: now,
                 sessionDate: selectedSessionDate,
                 usdToCNYRate: usdToCNYRate,
                 calendar: .autoupdatingCurrent
             )
-            lastSuccessfulRefresh = snapshot.generatedAt
-            errorMessage = nil
-            recoverySuggestion = nil
+            if snapshot != newSnapshot {
+                snapshot = newSnapshot
+            }
+            if dashboard != newDashboard {
+                dashboard = newDashboard
+            }
+            let generatedAt = newSnapshot.generatedAt
+            if lastSuccessfulRefresh != generatedAt {
+                lastSuccessfulRefresh = generatedAt
+            }
+            if errorMessage != nil {
+                errorMessage = nil
+            }
+            if recoverySuggestion != nil {
+                recoverySuggestion = nil
+            }
         } catch {
             let localized = error as? LocalizedError
-            errorMessage = localized?.errorDescription ?? error.localizedDescription
-            recoverySuggestion = localized?.recoverySuggestion
+            let nextErrorMessage = localized?.errorDescription ?? error.localizedDescription
+            let nextRecoverySuggestion = localized?.recoverySuggestion
+            if errorMessage != nextErrorMessage {
+                errorMessage = nextErrorMessage
+            }
+            if recoverySuggestion != nextRecoverySuggestion {
+                recoverySuggestion = nextRecoverySuggestion
+            }
         }
     }
 
