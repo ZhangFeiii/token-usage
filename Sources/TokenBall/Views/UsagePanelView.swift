@@ -602,59 +602,87 @@ private struct ActivityHeatmap: View {
         let rowSpacing = max(3, 4 * metrics.density)
         let weekdayLabelWidth = 13 * metrics.typographyScale
 
-        HStack(alignment: .top, spacing: max(6, 8 * metrics.density)) {
-            VStack(spacing: rowSpacing) {
-                Color.clear.frame(height: max(14, 17 * metrics.typographyScale))
-                ForEach(1...7, id: \.self) { weekday in
-                    Text(weekday == 2 ? "M" : weekday == 4 ? "W" : weekday == 6 ? "F" : "")
-                        .font(metrics.font(.smallMedium))
-                        .foregroundStyle(Color.tokenMuted)
-                        .frame(width: weekdayLabelWidth, height: 15 * metrics.typographyScale)
-                }
-            }
-            .frame(width: weekdayLabelWidth)
-
-            VStack(spacing: rowSpacing) {
-                HeatmapMonthHeader(markers: markers, columnSpacing: columnSpacing)
-                    .frame(height: max(14, 17 * metrics.typographyScale))
-
-                // Keep every cell in one stacking context. When the grid was
-                // nested as twenty week VStacks, a hovered cell's zIndex only
-                // reordered it inside its week; a neighboring week's cells
-                // could still paint over the tooltip. A flat lazy grid keeps
-                // the local hover state and lets zIndex lift the hovered cell
-                // above all 140 siblings without rebuilding the heatmap.
-                let columns = Array(
-                    repeating: GridItem(.flexible(), spacing: columnSpacing),
-                    count: 20
-                )
-                LazyVGrid(columns: columns, alignment: .leading, spacing: rowSpacing) {
-                    ForEach(grid.indices, id: \.self) { index in
-                        let week = index % 20
-                        let day = index / 20
-                        let point = grid[week * 7 + day]
-                        ActivityHeatmapCell(
-                            fill: color(for: point.costMicrosCNY, thresholds: levels),
-                            isToday: Calendar.autoupdatingCurrent.isDateInToday(point.date),
-                            week: week,
-                            tooltip: tooltip(for: point)
-                        )
+        ZStack(alignment: .topLeading) {
+            HStack(alignment: .top, spacing: max(6, 8 * metrics.density)) {
+                VStack(spacing: rowSpacing) {
+                    Color.clear.frame(height: max(14, 17 * metrics.typographyScale))
+                    ForEach(1...7, id: \.self) { weekday in
+                        Text(weekday == 2 ? "M" : weekday == 4 ? "W" : weekday == 6 ? "F" : "")
+                            .font(metrics.font(.smallMedium))
+                            .foregroundStyle(Color.tokenMuted)
+                            .frame(width: weekdayLabelWidth, height: 15 * metrics.typographyScale)
                     }
                 }
-                HStack(spacing: max(5, 7 * metrics.density)) {
-                    Text("Less")
-                    ForEach(0..<5, id: \.self) { level in
-                        RoundedRectangle(cornerRadius: max(2, 3 * metrics.density), style: .continuous)
-                            .fill(legendColor(level: level))
-                            .frame(width: 15 * metrics.typographyScale, height: 15 * metrics.typographyScale)
+                .frame(width: weekdayLabelWidth)
+
+                VStack(spacing: rowSpacing) {
+                    HeatmapMonthHeader(markers: markers, columnSpacing: columnSpacing)
+                        .frame(height: max(14, 17 * metrics.typographyScale))
+
+                    let columns = Array(
+                        repeating: GridItem(.flexible(), spacing: columnSpacing),
+                        count: 20
+                    )
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: rowSpacing) {
+                        ForEach(grid.indices, id: \.self) { index in
+                            let week = index % 20
+                            let day = index / 20
+                            let point = grid[week * 7 + day]
+                            ActivityHeatmapCell(
+                                fill: color(for: point.costMicrosCNY, thresholds: levels),
+                                isToday: Calendar.autoupdatingCurrent.isDateInToday(point.date),
+                                tooltip: tooltip(for: point)
+                            )
+                        }
                     }
-                    Text("More")
+                    HStack(spacing: max(5, 7 * metrics.density)) {
+                        Text("Less")
+                        ForEach(0..<5, id: \.self) { level in
+                            RoundedRectangle(cornerRadius: max(2, 3 * metrics.density), style: .continuous)
+                                .fill(legendColor(level: level))
+                                .frame(width: 15 * metrics.typographyScale, height: 15 * metrics.typographyScale)
+                        }
+                        Text("More")
+                    }
+                    .font(metrics.font(.body))
+                    .foregroundStyle(Color.tokenMuted)
+                    .padding(.leading, max(0, 8 * metrics.density))
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .font(metrics.font(.body))
-                .foregroundStyle(Color.tokenMuted)
-                .padding(.leading, max(0, 8 * metrics.density))
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+        .overlayPreferenceValue(ActivityHeatmapTooltipPreferenceKey.self) { preferences in
+            GeometryReader { proxy in
+                if let hovered = preferences.last {
+                    let cellFrame = proxy[hovered.anchor]
+                    let edgeInset = max(4, 6 * metrics.density)
+                    // Reserve a conservative envelope for the three-line
+                    // tooltip. Using an upper bound keeps the actual natural
+                    // size unclipped without a second layout pass or mouse
+                    // tracking state at the heatmap level.
+                    let tooltipWidth = min(
+                        220 * metrics.density,
+                        max(1, proxy.size.width - edgeInset * 2)
+                    )
+                    let tooltipHeight = 58 * metrics.density
+                    let gap = max(6, 8 * metrics.density)
+                    let showBelow = cellFrame.minY < tooltipHeight + gap + edgeInset
+                    let x = min(
+                        max(cellFrame.midX, edgeInset + tooltipWidth / 2),
+                        max(edgeInset + tooltipWidth / 2, proxy.size.width - edgeInset - tooltipWidth / 2)
+                    )
+                    let y = showBelow
+                        ? cellFrame.maxY + gap + tooltipHeight / 2
+                        : cellFrame.minY - gap - tooltipHeight / 2
+
+                    ActivityHeatmapTooltipView(tooltip: hovered.tooltip, metrics: metrics)
+                        .frame(maxWidth: tooltipWidth, alignment: .leading)
+                        .fixedSize()
+                        .position(x: x, y: y)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: showBelow ? .top : .bottom)))
+                }
+            }
+            .allowsHitTesting(false)
         }
     }
 
@@ -689,24 +717,32 @@ private struct ActivityHeatmap: View {
     }
 }
 
+private struct ActivityHeatmapTooltipPreferenceKey: PreferenceKey {
+    static let defaultValue: [ActivityHeatmapTooltipAnchor] = []
+
+    static func reduce(
+        value: inout [ActivityHeatmapTooltipAnchor],
+        nextValue: () -> [ActivityHeatmapTooltipAnchor]
+    ) {
+        value.append(contentsOf: nextValue())
+    }
+}
+
+private struct ActivityHeatmapTooltipAnchor {
+    let tooltip: ActivityHeatmapTooltip
+    let anchor: Anchor<CGRect>
+}
+
 /// A single heatmap cell owns its pointer state. This keeps hover invalidation
 /// local instead of asking ActivityHeatmap to rebuild its grid, month labels,
-/// and thresholds on every mouse move.
+/// and thresholds on every mouse move. The tooltip itself is rendered by the
+/// heatmap's outer preference overlay, after all cells in the grid.
 private struct ActivityHeatmapCell: View {
     let fill: Color
     let isToday: Bool
-    let week: Int
     let tooltip: ActivityHeatmapTooltip
     @Environment(\.dashboardLayoutMetrics) private var metrics
     @State private var isHovered = false
-
-    private var tooltipAlignment: Alignment {
-        switch week {
-        case 0...2: .bottomLeading
-        case 17...19: .bottomTrailing
-        default: .bottom
-        }
-    }
 
     var body: some View {
         RoundedRectangle(cornerRadius: max(2, 3 * metrics.density), style: .continuous)
@@ -721,15 +757,6 @@ private struct ActivityHeatmapCell: View {
                 }
             }
             .scaleEffect(isHovered ? 1.10 : 1, anchor: .center)
-            .overlay(alignment: tooltipAlignment) {
-                if isHovered {
-                    ActivityHeatmapTooltipView(tooltip: tooltip, metrics: metrics)
-                        .fixedSize()
-                        .offset(y: -8 * metrics.density)
-                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)))
-                        .allowsHitTesting(false)
-                }
-            }
             .contentShape(Rectangle())
             .onHover { hovering in
                 guard hovering != isHovered else { return }
@@ -737,9 +764,11 @@ private struct ActivityHeatmapCell: View {
                     isHovered = hovering
                 }
             }
-            // The heatmap uses one flat LazyVGrid, so this raises the hovered
-            // cell (and its tooltip) above every neighboring cell.
-            .zIndex(isHovered ? 100 : 0)
+            .anchorPreference(key: ActivityHeatmapTooltipPreferenceKey.self, value: .bounds) { bounds in
+                isHovered
+                    ? [ActivityHeatmapTooltipAnchor(tooltip: tooltip, anchor: bounds)]
+                    : []
+            }
             .accessibilityLabel(tooltip.accessibilityText)
             .accessibilityHint("悬停查看每日用量")
     }
@@ -774,13 +803,10 @@ private struct ActivityHeatmapTooltipView: View {
         .padding(.vertical, 6 * metrics.density)
         .background {
             let shape = RoundedRectangle(cornerRadius: max(6, 8 * metrics.density), style: .continuous)
-            ZStack {
-                shape.fill(.regularMaterial)
-                // Keep the frosted appearance, but give the tooltip a nearly
-                // opaque system surface so coral cells cannot bleed through
-                // the text or visually cover the panel.
-                shape.fill(Color(nsColor: NSColor.windowBackgroundColor).opacity(0.97))
-            }
+            // This is deliberately opaque. A material would sample the
+            // neighboring coral cells before the outer preference overlay is
+            // composited, making the tooltip appear covered or translucent.
+            shape.fill(Color(nsColor: NSColor.windowBackgroundColor))
         }
         .overlay {
             RoundedRectangle(cornerRadius: max(6, 8 * metrics.density), style: .continuous)
