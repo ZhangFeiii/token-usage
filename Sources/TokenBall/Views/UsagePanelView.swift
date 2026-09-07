@@ -618,19 +618,27 @@ private struct ActivityHeatmap: View {
                 HeatmapMonthHeader(markers: markers, columnSpacing: columnSpacing)
                     .frame(height: max(14, 17 * metrics.typographyScale))
 
-                HStack(alignment: .top, spacing: columnSpacing) {
-                    ForEach(0..<20, id: \.self) { week in
-                        VStack(spacing: rowSpacing) {
-                            ForEach(0..<7, id: \.self) { day in
-                                let point = grid[week * 7 + day]
-                                ActivityHeatmapCell(
-                                    fill: color(for: point.costMicrosCNY, thresholds: levels),
-                                    isToday: Calendar.autoupdatingCurrent.isDateInToday(point.date),
-                                    week: week,
-                                    tooltip: tooltip(for: point)
-                                )
-                            }
-                        }
+                // Keep every cell in one stacking context. When the grid was
+                // nested as twenty week VStacks, a hovered cell's zIndex only
+                // reordered it inside its week; a neighboring week's cells
+                // could still paint over the tooltip. A flat lazy grid keeps
+                // the local hover state and lets zIndex lift the hovered cell
+                // above all 140 siblings without rebuilding the heatmap.
+                let columns = Array(
+                    repeating: GridItem(.flexible(), spacing: columnSpacing),
+                    count: 20
+                )
+                LazyVGrid(columns: columns, alignment: .leading, spacing: rowSpacing) {
+                    ForEach(grid.indices, id: \.self) { index in
+                        let week = index % 20
+                        let day = index / 20
+                        let point = grid[week * 7 + day]
+                        ActivityHeatmapCell(
+                            fill: color(for: point.costMicrosCNY, thresholds: levels),
+                            isToday: Calendar.autoupdatingCurrent.isDateInToday(point.date),
+                            week: week,
+                            tooltip: tooltip(for: point)
+                        )
                     }
                 }
                 HStack(spacing: max(5, 7 * metrics.density)) {
@@ -729,7 +737,9 @@ private struct ActivityHeatmapCell: View {
                     isHovered = hovering
                 }
             }
-            .zIndex(isHovered ? 10 : 0)
+            // The heatmap uses one flat LazyVGrid, so this raises the hovered
+            // cell (and its tooltip) above every neighboring cell.
+            .zIndex(isHovered ? 100 : 0)
             .accessibilityLabel(tooltip.accessibilityText)
             .accessibilityHint("悬停查看每日用量")
     }
@@ -762,7 +772,16 @@ private struct ActivityHeatmapTooltipView: View {
         .foregroundStyle(Color.tokenInk)
         .padding(.horizontal, 8 * metrics.density)
         .padding(.vertical, 6 * metrics.density)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: max(6, 8 * metrics.density), style: .continuous))
+        .background {
+            let shape = RoundedRectangle(cornerRadius: max(6, 8 * metrics.density), style: .continuous)
+            ZStack {
+                shape.fill(.regularMaterial)
+                // Keep the frosted appearance, but give the tooltip a nearly
+                // opaque system surface so coral cells cannot bleed through
+                // the text or visually cover the panel.
+                shape.fill(Color(nsColor: NSColor.windowBackgroundColor).opacity(0.97))
+            }
+        }
         .overlay {
             RoundedRectangle(cornerRadius: max(6, 8 * metrics.density), style: .continuous)
                 .stroke(Color.primary.opacity(0.18), lineWidth: 1)
