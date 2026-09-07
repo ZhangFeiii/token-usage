@@ -623,19 +623,12 @@ private struct ActivityHeatmap: View {
                         VStack(spacing: rowSpacing) {
                             ForEach(0..<7, id: \.self) { day in
                                 let point = grid[week * 7 + day]
-                                RoundedRectangle(cornerRadius: max(2, 3 * metrics.density), style: .continuous)
-                                    .fill(color(for: point.costMicrosCNY, thresholds: levels))
-                                    .frame(maxWidth: .infinity)
-                                    .aspectRatio(1, contentMode: .fit)
-                                    .overlay {
-                                        if Calendar.autoupdatingCurrent.isDateInToday(point.date) {
-                                            RoundedRectangle(cornerRadius: max(3, 4 * metrics.density), style: .continuous)
-                                                .stroke(Color.dashboardCoral, lineWidth: max(1, 2 * metrics.typographyScale))
-                                                .padding(-2)
-                                        }
-                                    }
-                                    .contentShape(Rectangle())
-                                    .help(dayTooltip(for: point))
+                                ActivityHeatmapCell(
+                                    fill: color(for: point.costMicrosCNY, thresholds: levels),
+                                    isToday: Calendar.autoupdatingCurrent.isDateInToday(point.date),
+                                    week: week,
+                                    tooltip: tooltip(for: point)
+                                )
                             }
                         }
                     }
@@ -675,18 +668,106 @@ private struct ActivityHeatmap: View {
         }
     }
 
-    /// The heatmap already owns a complete 140-day in-memory snapshot. Build
-    /// the native hover text from that value so pointer interaction never
-    /// reaches the repository, collector, or exchange-rate provider.
-    private func dayTooltip(for day: DailyDashboardUsage) -> String {
-        let date = day.date.formatted(date: .long, time: .omitted)
-        let total = TokenFormatter.compact(day.totalTokens)
-        let input = TokenFormatter.compact(day.inputTokens)
-        let output = TokenFormatter.compact(day.outputTokens)
-        let cache = TokenFormatter.compact(
-            day.cacheReadTokens.saturatingAdd(day.cacheWriteTokens)
+    /// Precompute the four short strings while the 140-day grid is being
+    /// rendered. The cell's hover state is local, so entering a cell only
+    /// rebuilds that cell and its already-formatted tooltip.
+    private func tooltip(for day: DailyDashboardUsage) -> ActivityHeatmapTooltip {
+        ActivityHeatmapTooltip(
+            date: day.date.formatted(date: .long, time: .omitted),
+            cost: dashboardCNY(day.costMicrosCNY),
+            tokens: TokenFormatter.compact(day.totalTokens),
+            requests: day.requestCount.formatted()
         )
-        return "\(date)\n费用 \(dashboardCNY(day.costMicrosCNY)) · \(day.requestCount.formatted()) 次请求\nToken \(total) · 输入 \(input) · 输出 \(output) · 缓存 \(cache)"
+    }
+}
+
+/// A single heatmap cell owns its pointer state. This keeps hover invalidation
+/// local instead of asking ActivityHeatmap to rebuild its grid, month labels,
+/// and thresholds on every mouse move.
+private struct ActivityHeatmapCell: View {
+    let fill: Color
+    let isToday: Bool
+    let week: Int
+    let tooltip: ActivityHeatmapTooltip
+    @Environment(\.dashboardLayoutMetrics) private var metrics
+    @State private var isHovered = false
+
+    private var tooltipAlignment: Alignment {
+        switch week {
+        case 0...2: .bottomLeading
+        case 17...19: .bottomTrailing
+        default: .bottom
+        }
+    }
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: max(2, 3 * metrics.density), style: .continuous)
+            .fill(fill)
+            .frame(maxWidth: .infinity)
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                if isToday {
+                    RoundedRectangle(cornerRadius: max(3, 4 * metrics.density), style: .continuous)
+                        .stroke(Color.dashboardCoral, lineWidth: max(1, 2 * metrics.typographyScale))
+                        .padding(-2)
+                }
+            }
+            .scaleEffect(isHovered ? 1.10 : 1, anchor: .center)
+            .overlay(alignment: tooltipAlignment) {
+                if isHovered {
+                    ActivityHeatmapTooltipView(tooltip: tooltip, metrics: metrics)
+                        .fixedSize()
+                        .offset(y: -8 * metrics.density)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)))
+                        .allowsHitTesting(false)
+                }
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                guard hovering != isHovered else { return }
+                withAnimation(.easeOut(duration: 0.12)) {
+                    isHovered = hovering
+                }
+            }
+            .zIndex(isHovered ? 10 : 0)
+            .accessibilityLabel(tooltip.accessibilityText)
+            .accessibilityHint("悬停查看每日用量")
+    }
+}
+
+private struct ActivityHeatmapTooltip: Equatable {
+    let date: String
+    let cost: String
+    let tokens: String
+    let requests: String
+
+    var accessibilityText: String {
+        "\(date)，费用 \(cost)，Token \(tokens)，\(requests) 次请求"
+    }
+}
+
+private struct ActivityHeatmapTooltipView: View {
+    let tooltip: ActivityHeatmapTooltip
+    let metrics: DashboardLayoutMetrics
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: max(1, 2 * metrics.density)) {
+            Text(tooltip.date)
+                .font(metrics.font(.smallMedium))
+            Text("费用 \(tooltip.cost)")
+                .font(metrics.font(.smallStrong))
+            Text("Token \(tooltip.tokens) · \(tooltip.requests) 次请求")
+                .font(metrics.font(.small))
+        }
+        .foregroundStyle(Color.tokenInk)
+        .padding(.horizontal, 8 * metrics.density)
+        .padding(.vertical, 6 * metrics.density)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: max(6, 8 * metrics.density), style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: max(6, 8 * metrics.density), style: .continuous)
+                .stroke(Color.primary.opacity(0.18), lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.16), radius: 7, y: 3)
     }
 }
 
