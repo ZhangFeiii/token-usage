@@ -115,6 +115,9 @@ private struct DashboardLayoutMetrics: Equatable {
     var donutSize: CGFloat { min(124, max(108, contentWidth * 0.32)) }
     var weeklyChartHeight: CGFloat { min(140, max(112, contentWidth * 0.37)) }
     var emptyMinHeight: CGFloat { max(180, 220 * density) }
+    var listRowSpacing: CGFloat { max(6, 8 * density) }
+    var listRowVerticalPadding: CGFloat { max(7, 9 * density) }
+    var listProgressHeight: CGFloat { max(5, 6 * density) }
 
     func font(_ style: DashboardTextStyle, design: Font.Design = .rounded) -> Font {
         .system(size: style.baseSize * typographyScale, weight: style.weight, design: design)
@@ -252,6 +255,7 @@ private enum DashboardTab: String, CaseIterable, Identifiable {
 struct UsagePanelView: View {
     @ObservedObject var viewModel: UsageViewModel
     @State private var selectedTab: DashboardTab = .overview
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         GeometryReader { proxy in
@@ -264,13 +268,22 @@ struct UsagePanelView: View {
                 // text and card boundaries. The remaining translucency keeps
                 // the frosted effect without letting wallpaper dominate it.
                 Rectangle()
-                    .fill(Color(nsColor: NSColor.windowBackgroundColor).opacity(0.72))
+                    .fill(
+                        Color(nsColor: NSColor.windowBackgroundColor)
+                            .opacity(colorScheme == .dark ? 0.88 : 0.76)
+                    )
                 LinearGradient(
-                    colors: [
-                        Color.white.opacity(0.18),
-                        Color(red: 0.91, green: 0.93, blue: 0.96).opacity(0.20),
-                        Color.white.opacity(0.08)
-                    ],
+                    colors: colorScheme == .dark
+                        ? [
+                            Color.white.opacity(0.045),
+                            Color(red: 0.12, green: 0.16, blue: 0.22).opacity(0.11),
+                            Color.black.opacity(0.055)
+                        ]
+                        : [
+                            Color.white.opacity(0.18),
+                            Color(red: 0.91, green: 0.93, blue: 0.96).opacity(0.20),
+                            Color.white.opacity(0.08)
+                        ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
@@ -343,6 +356,7 @@ private struct DashboardSidebar: View {
     @Binding var selection: DashboardTab
     @State private var hoveredTab: DashboardTab?
     @Environment(\.dashboardLayoutMetrics) private var metrics
+    @Environment(\.colorScheme) private var colorScheme
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
@@ -437,7 +451,10 @@ private struct DashboardSidebar: View {
             .padding(.horizontal, metrics.sidebarHorizontalPadding)
             .padding(.bottom, max(11, 14 * metrics.density))
         }
-        .background(Color.white.opacity(0.075))
+        .background(
+            Color(nsColor: NSColor.controlBackgroundColor)
+                .opacity(colorScheme == .dark ? 0.30 : 0.18)
+        )
     }
 }
 
@@ -518,10 +535,10 @@ private struct OverviewDashboard: View {
                         VStack(alignment: .leading, spacing: max(10, 13 * metrics.density)) {
                             Text("PACE")
                                 .dashboardSectionTitle()
-                            PaceRow(title: "近 60 分钟速率", value: hourlyRateText)
-                            PaceRow(title: "预计今日总额", value: dashboardCNY(estimatedTodayCost))
+                            PaceRow(title: "Rolling 60-Minute Rate", value: hourlyRateText)
+                            PaceRow(title: "Estimated Today", value: dashboardCNY(estimatedTodayCost))
                             PaceRow(
-                                title: "均次成本",
+                                title: "Average per Request",
                                 value: today.requestCount > 0
                                     ? dashboardCNY(today.costMicrosCNY / Int64(today.requestCount)) + "/req"
                                     : "¥0.00/req"
@@ -550,7 +567,7 @@ private struct MetricCard: View {
     @Environment(\.dashboardLayoutMetrics) private var metrics
 
     var body: some View {
-        DashboardCard {
+        DashboardCard(style: .elevated) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: max(4, 6 * metrics.density)) {
                     Text(title).dashboardSectionTitle()
@@ -620,10 +637,10 @@ private struct ActivityDashboard: View {
                 }
 
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: metrics.pageSpacing) {
-                    ActivityStatCard(title: "90天总费用", value: dashboardCNY(total90), symbol: "chart.line.uptrend.xyaxis", tint: .dashboardCoral)
-                    ActivityStatCard(title: "活跃天数", value: "\(activeDays) 天", symbol: "calendar", tint: .dashboardBlue)
-                    ActivityStatCard(title: "日均费用", value: dashboardCNY(averageActiveDay), symbol: "bolt", tint: .dashboardOrange)
-                    ActivityStatCard(title: "峰值单日", value: dashboardCNY(peakDay), symbol: "chart.bar.fill", tint: .dashboardGreen)
+                    ActivityStatCard(title: "90-Day Cost", value: dashboardCNY(total90), symbol: "chart.line.uptrend.xyaxis", tint: .dashboardCoral)
+                    ActivityStatCard(title: "Active Days", value: "\(activeDays) days", symbol: "calendar", tint: .dashboardBlue)
+                    ActivityStatCard(title: "Average Active Day", value: dashboardCNY(averageActiveDay), symbol: "bolt", tint: .dashboardOrange)
+                    ActivityStatCard(title: "Peak Day", value: dashboardCNY(peakDay), symbol: "chart.bar.fill", tint: .dashboardGreen)
                 }
 
                 DashboardCard {
@@ -649,7 +666,7 @@ private struct ActivityStatCard: View {
     @Environment(\.dashboardLayoutMetrics) private var metrics
 
     var body: some View {
-        DashboardCard(insets: 12) {
+        DashboardCard(style: .elevated, insets: 12) {
             HStack(spacing: max(10, 14 * metrics.density)) {
                 Image(systemName: symbol)
                     .font(metrics.iconFont(size: 16, weight: .medium))
@@ -904,7 +921,7 @@ private struct ActivityHeatmapCell: View {
                     : []
             }
             .accessibilityLabel(tooltip.accessibilityText)
-            .accessibilityHint("悬停查看每日用量")
+            .accessibilityHint("Hover to view daily usage")
     }
 }
 
@@ -915,7 +932,7 @@ private struct ActivityHeatmapTooltip: Equatable {
     let requests: String
 
     var accessibilityText: String {
-        "\(date)，费用 \(cost)，Token \(tokens)，\(requests) 次请求"
+        "\(date), cost \(cost), \(tokens) tokens, \(requests) requests"
     }
 }
 
@@ -927,9 +944,9 @@ private struct ActivityHeatmapTooltipView: View {
         VStack(alignment: .leading, spacing: max(1, 2 * metrics.density)) {
             Text(tooltip.date)
                 .font(metrics.font(.smallMedium))
-            Text("费用 \(tooltip.cost)")
+            Text("Cost \(tooltip.cost)")
                 .font(metrics.font(.smallStrong))
-            Text("Token \(tooltip.tokens) · \(tooltip.requests) 次请求")
+            Text("\(tooltip.tokens) tokens · \(tooltip.requests) requests")
                 .font(metrics.font(.small))
         }
         .foregroundStyle(Color.tokenInk)
@@ -1015,14 +1032,20 @@ private struct WeeklyCostChart: View {
     var body: some View {
         let weeklyPoints = points(from: days)
         let maximum = max(1, Double(weeklyPoints.map(\.total).max() ?? 0))
+        let peakIndex = weeklyPoints.max(by: { $0.total < $1.total })?.index
+        let latestActiveIndex = weeklyPoints.last(where: { $0.total > 0 })?.index
 
         GeometryReader { proxy in
             HStack(alignment: .bottom, spacing: max(7, 10 * metrics.density)) {
                 ForEach(weeklyPoints) { point in
                     let height = point.total == 0 ? 4 : max(8, (proxy.size.height - 34) * CGFloat(Double(point.total) / maximum))
+                    let showCost = point.total > 0
+                        && (point.index == peakIndex || point.index == latestActiveIndex)
+                    let showDate = point.index.isMultiple(of: 3)
+                        || point.index == weeklyPoints.indices.last
                     VStack(spacing: max(4, 6 * metrics.density)) {
                         Spacer(minLength: 0)
-                        Text(point.total > 0 ? shortCNY(point.total) : " ")
+                        Text(showCost ? shortCNY(point.total) : " ")
                             .font(metrics.font(.chart))
                             .foregroundStyle(Color.tokenMuted)
                             .lineLimit(1)
@@ -1032,7 +1055,7 @@ private struct WeeklyCostChart: View {
                         RoundedRectangle(cornerRadius: max(4, 6 * metrics.density), style: .continuous)
                             .fill(point.total == 0 ? Color.primary.opacity(0.11) : Color.dashboardCoral.opacity(point.index == weeklyPoints.count - 1 ? 0.95 : 0.55))
                             .frame(height: height)
-                        Text(shortChartDate(point.startDate))
+                        Text(showDate ? shortChartDate(point.startDate) : " ")
                             .font(metrics.font(.chart))
                             .foregroundStyle(point.index == weeklyPoints.count - 1 ? Color.dashboardCoral : Color.tokenMuted)
                             .lineLimit(1)
@@ -1041,7 +1064,7 @@ private struct WeeklyCostChart: View {
                             .frame(maxWidth: .infinity)
                     }
                     .frame(maxWidth: .infinity)
-                    .help("\(dashboardCNY(point.total))")
+                    .help("\(shortChartDate(point.startDate)) · \(dashboardCNY(point.total))")
                 }
             }
         }
@@ -1071,16 +1094,14 @@ private struct ModelsDashboard: View {
         let unpricedTokens = unpricedModels.reduce(Int64.zero) { $0.saturatingAdd($1.totalTokens) }
         let totalCost = visibleModels.reduce(Int64.zero) { $0.saturatingAdd($1.costMicrosCNY) }
         let otherCost = max(0, totalCost - displayedCost)
-        let totalInput = visibleModels.reduce(Int64.zero) {
-            $0.saturatingAdd($1.inputTokens)
-                .saturatingAdd($1.cacheReadTokens)
-                .saturatingAdd($1.cacheWriteTokens)
-        }
+        let totalFreshInput = visibleModels.reduce(Int64.zero) { $0.saturatingAdd($1.inputTokens) }
         let totalOutput = visibleModels.reduce(Int64.zero) { $0.saturatingAdd($1.outputTokens) }
+        let totalCacheRead = visibleModels.reduce(Int64.zero) { $0.saturatingAdd($1.cacheReadTokens) }
+        let totalCacheWrite = visibleModels.reduce(Int64.zero) { $0.saturatingAdd($1.cacheWriteTokens) }
 
         ScrollView {
             VStack(spacing: metrics.pageSpacing) {
-                DashboardCard {
+                DashboardCard(style: .elevated) {
                     VStack(alignment: .leading, spacing: max(10, 12 * metrics.density)) {
                         Text("COST BY MODEL · LAST 90 DAYS")
                             .dashboardSectionTitle()
@@ -1104,17 +1125,43 @@ private struct ModelsDashboard: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        Text("Total Input \(TokenFormatter.compact(totalInput)) · Output \(TokenFormatter.compact(totalOutput))")
-                            .font(metrics.font(.metricSubtitle))
-                            .foregroundStyle(Color.tokenMuted)
+                        WrappingMetricsLayout(
+                            horizontalSpacing: max(8, 11 * metrics.density),
+                            verticalSpacing: max(3, 4 * metrics.density)
+                        ) {
+                            CompactTokenMetric(
+                                title: "Fresh Input",
+                                value: totalFreshInput,
+                                color: TokenMetricColors.input
+                            )
+                            CompactTokenMetric(
+                                title: "Output",
+                                value: totalOutput,
+                                color: TokenMetricColors.output
+                            )
+                            CompactTokenMetric(
+                                title: "Cache Read",
+                                value: totalCacheRead,
+                                color: TokenMetricColors.cacheRead
+                            )
+                            if totalCacheWrite > 0 {
+                                CompactTokenMetric(
+                                    title: "Cache Write",
+                                    value: totalCacheWrite,
+                                    color: TokenMetricColors.cacheWrite
+                                )
+                            }
+                        }
+                        .dashboardDetailText()
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         if !unpricedModels.isEmpty {
                             Label(
-                                "\(unpricedModels.count) 个模型未计价 · \(TokenFormatter.compact(unpricedTokens)) tokens",
+                                "\(unpricedModels.count) unpriced models · \(TokenFormatter.compact(unpricedTokens)) tokens",
                                 systemImage: "exclamationmark.circle"
                             )
                             .font(metrics.font(.smallMedium))
                             .foregroundStyle(Color.orange)
-                            .help("缺少公开价格的模型不会被当作免费模型计入费用。")
+                            .help("Models without public pricing are excluded from cost instead of being treated as free.")
                         }
                     }
                 }
@@ -1131,7 +1178,7 @@ private struct ModelsDashboard: View {
                                 percent: fraction(model.costMicrosCNY, of: totalCost)
                             )
                             if index != visibleModels.indices.last {
-                                Divider().opacity(0.38)
+                                DashboardRowDivider()
                             }
                         }
                     }
@@ -1182,9 +1229,9 @@ private struct DonutChart: View {
             }
         }
         .padding(4 * metrics.density)
-        .help("总费用：\(dashboardCNY(totalCost))")
+        .help("Total cost: \(dashboardCNY(totalCost))")
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("总费用 \(dashboardCNY(totalCost))")
+        .accessibilityLabel("Total cost \(dashboardCNY(totalCost))")
     }
 
     private var ringWidth: CGFloat {
@@ -1273,7 +1320,7 @@ private struct ModelBreakdownRow: View {
     @Environment(\.dashboardLayoutMetrics) private var metrics
 
     var body: some View {
-        VStack(alignment: .leading, spacing: max(6, 8 * metrics.density)) {
+        VStack(alignment: .leading, spacing: metrics.listRowSpacing) {
             HStack(spacing: max(6, 8 * metrics.density)) {
                 Circle().fill(color).frame(width: 9 * metrics.typographyScale, height: 9 * metrics.typographyScale)
                 Text(UsageModelDisplayNameFormatter.compact(model.model))
@@ -1285,16 +1332,11 @@ private struct ModelBreakdownRow: View {
                     .layoutPriority(1)
                 AgentBadge(agent: model.agent)
                 Spacer()
-                Text(model.costMicrosCNY == 0 && model.totalTokens > 0
-                    ? "未计价"
-                    : "\(dashboardCNY(model.costMicrosCNY)) · \(dashboardPercent(percent))")
-                    .font(metrics.font(.bodyMedium))
-                    .foregroundStyle(Color.tokenMuted)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .allowsTightening(true)
-                    .minimumScaleFactor(0.62)
-                    .fixedSize(horizontal: true, vertical: false)
+                DashboardRowCost(
+                    costMicrosCNY: model.costMicrosCNY,
+                    detail: model.costMicrosCNY > 0 ? dashboardPercent(percent) : nil,
+                    isUnpriced: model.costMicrosCNY == 0 && model.totalTokens > 0
+                )
             }
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
@@ -1302,7 +1344,7 @@ private struct ModelBreakdownRow: View {
                     Capsule().fill(color).frame(width: proxy.size.width * max(0.006, percent))
                 }
             }
-            .frame(height: max(5, 7 * metrics.density))
+            .frame(height: metrics.listProgressHeight)
             WrappingMetricsLayout(
                 horizontalSpacing: max(8, 11 * metrics.density),
                 verticalSpacing: max(3, 4 * metrics.density)
@@ -1337,7 +1379,7 @@ private struct ModelBreakdownRow: View {
             .dashboardDetailText()
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, max(5, 7 * metrics.density))
+        .padding(.vertical, metrics.listRowVerticalPadding)
     }
 }
 
@@ -1359,14 +1401,14 @@ private struct ProjectsDashboard: View {
                     .dashboardSectionTitle()
                     .padding(.bottom, 4)
                 if visibleProjects.isEmpty {
-                    InlineEmptyState(text: "尚无可识别的项目数据")
+                    InlineEmptyState(text: "No identifiable project data")
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(Array(visibleProjects.enumerated()), id: \.element.id) { index, project in
                                 ProjectRow(project: project, fraction: Double(project.costMicrosCNY) / maximumCost, color: dashboardPalette[index % dashboardPalette.count])
                                 if index != visibleProjects.indices.last {
-                                    Divider().opacity(0.32)
+                                    DashboardRowDivider()
                                 }
                             }
                         }
@@ -1391,7 +1433,7 @@ private struct ProjectRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: max(6, 8 * metrics.density)) {
+        VStack(alignment: .leading, spacing: metrics.listRowSpacing) {
             HStack(spacing: max(6, 9 * metrics.density)) {
                 Image(systemName: "folder")
                     .font(metrics.iconFont(size: 13, weight: .medium))
@@ -1406,14 +1448,7 @@ private struct ProjectRow: View {
                     .layoutPriority(1)
                 AgentBadge(agent: project.agent)
                 Spacer()
-                Text(dashboardCNY(project.costMicrosCNY))
-                    .font(metrics.font(.bodyMedium))
-                    .foregroundStyle(Color.tokenMuted)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .allowsTightening(true)
-                    .minimumScaleFactor(0.65)
-                    .fixedSize(horizontal: true, vertical: false)
+                DashboardRowCost(costMicrosCNY: project.costMicrosCNY)
             }
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
@@ -1421,7 +1456,7 @@ private struct ProjectRow: View {
                     Capsule().fill(color).frame(width: proxy.size.width * max(0.006, fraction))
                 }
             }
-            .frame(height: max(5, 6 * metrics.density))
+            .frame(height: metrics.listProgressHeight)
             WrappingMetricsLayout(
                 horizontalSpacing: max(10, 15 * metrics.density),
                 verticalSpacing: max(3, 4 * metrics.density)
@@ -1448,7 +1483,7 @@ private struct ProjectRow: View {
             .dashboardDetailText()
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, max(8, 10 * metrics.density))
+        .padding(.vertical, metrics.listRowVerticalPadding)
         .help(project.projectPath ?? "")
     }
 }
@@ -1467,7 +1502,7 @@ private struct SessionsDashboard: View {
         let totalTokens = sessions.reduce(Int64.zero) { $0.saturatingAdd($1.totalTokens) }
 
         VStack(spacing: metrics.pageSpacing) {
-            DashboardCard(insets: 12) {
+            DashboardCard(style: .elevated, insets: 12) {
                 HStack {
                     dateButton(symbol: "chevron.left", offset: -1)
                     Spacer()
@@ -1496,14 +1531,14 @@ private struct SessionsDashboard: View {
 
             DashboardCard {
                 if sessions.isEmpty {
-                    InlineEmptyState(text: "这一天没有 Session 记录")
+                    InlineEmptyState(text: "No sessions on this day")
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
                                 SessionRow(session: session)
                                 if index != sessions.indices.last {
-                                    Divider().opacity(0.38)
+                                    DashboardRowDivider()
                                 }
                             }
                         }
@@ -1525,7 +1560,10 @@ private struct SessionsDashboard: View {
                 .font(metrics.iconFont(size: 15, weight: .semibold))
                 .foregroundStyle(Color.tokenInk)
                 .frame(width: 38 * metrics.density, height: 38 * metrics.density)
-                .background(Color.white.opacity(0.20), in: Circle())
+                .background(
+                    Color(nsColor: NSColor.controlBackgroundColor).opacity(0.56),
+                    in: Circle()
+                )
                 .overlay { Circle().stroke(Color.primary.opacity(0.18), lineWidth: 1) }
         }
         .buttonStyle(.plain)
@@ -1551,7 +1589,7 @@ private struct SessionRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: max(5, 7 * metrics.density)) {
+        VStack(alignment: .leading, spacing: metrics.listRowSpacing) {
             HStack(alignment: .firstTextBaseline, spacing: max(7, 10 * metrics.density)) {
                 Text(displayTitle)
                     .font(metrics.font(.sessionTitle))
@@ -1561,14 +1599,7 @@ private struct SessionRow: View {
                     .minimumScaleFactor(0.72)
                     .layoutPriority(1)
                 Spacer(minLength: 8)
-                Text(dashboardCNY(session.costMicrosCNY))
-                    .font(metrics.font(.sessionCost))
-                    .foregroundStyle(Color.dashboardCoral)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .allowsTightening(true)
-                    .minimumScaleFactor(0.65)
-                    .fixedSize(horizontal: true, vertical: false)
+                DashboardRowCost(costMicrosCNY: session.costMicrosCNY)
             }
 
             WrappingMetricsLayout(
@@ -1590,7 +1621,7 @@ private struct SessionRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             TokenCompositionBar(session: session)
-                .frame(height: max(5, 6 * metrics.density))
+                .frame(height: metrics.listProgressHeight)
 
             WrappingMetricsLayout(
                 horizontalSpacing: max(8, 11 * metrics.density),
@@ -1603,7 +1634,7 @@ private struct SessionRow: View {
             .dashboardDetailText()
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, max(8, 11 * metrics.density))
+        .padding(.vertical, metrics.listRowVerticalPadding)
         .help(session.projectPath ?? session.sessionID)
     }
 
@@ -1647,13 +1678,13 @@ private struct SessionRow: View {
                 .fontWeight(.semibold)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
-                .help("输出 Token ÷ 可识别的模型生成时长；排除已识别的工具等待和用户停顿，但并非服务端实时遥测。")
+                .help("Output tokens divided by detected model generation time. Known tool waits and user pauses are excluded; this is not server-side telemetry.")
         } else {
-            Text("速度 —")
+            Text("Speed —")
                 .foregroundStyle(Color.dashboardPurple)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
-                .help("该数据源缺少可靠的响应级生成时间，未估算速度。")
+                .help("This source does not expose reliable response-level generation timing, so speed is not estimated.")
         }
     }
 
@@ -1662,7 +1693,7 @@ private struct SessionRow: View {
             .foregroundStyle(Color.tokenMuted)
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
-            .help("缓存读取 ÷（新输入 + 缓存读取 + 缓存写入）")
+            .help("Cache Read ÷ (Fresh Input + Cache Read + Cache Write)")
     }
 }
 
@@ -1694,12 +1725,24 @@ private struct TokenCompositionBar: View {
 
 // MARK: - Shared components
 
+private enum DashboardCardStyle {
+    case elevated
+    case content
+}
+
 private struct DashboardCard<Content: View>: View {
+    let style: DashboardCardStyle
     let insets: CGFloat?
     @ViewBuilder let content: Content
     @Environment(\.dashboardLayoutMetrics) private var metrics
+    @Environment(\.colorScheme) private var colorScheme
 
-    init(insets: CGFloat? = nil, @ViewBuilder content: () -> Content) {
+    init(
+        style: DashboardCardStyle = .content,
+        insets: CGFloat? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.style = style
         self.insets = insets
         self.content = content()
     }
@@ -1708,12 +1751,36 @@ private struct DashboardCard<Content: View>: View {
         content
             .padding(insets.map { $0 * metrics.density } ?? metrics.cardInsets)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.white.opacity(0.22), in: RoundedRectangle(cornerRadius: metrics.cardRadius, style: .continuous))
+            .background(
+                Color(nsColor: NSColor.controlBackgroundColor).opacity(surfaceOpacity),
+                in: RoundedRectangle(cornerRadius: metrics.cardRadius, style: .continuous)
+            )
             .overlay {
                 RoundedRectangle(cornerRadius: metrics.cardRadius, style: .continuous)
-                    .stroke(Color.primary.opacity(0.16), lineWidth: 1)
+                    .stroke(Color.primary.opacity(strokeOpacity), lineWidth: 1)
             }
-            .shadow(color: Color.black.opacity(0.035), radius: max(7, 10 * metrics.density), y: max(3, 5 * metrics.density))
+            .shadow(
+                color: Color.black.opacity(shadowOpacity),
+                radius: max(style == .elevated ? 7 : 4, (style == .elevated ? 10 : 6) * metrics.density),
+                y: max(style == .elevated ? 3 : 1, (style == .elevated ? 5 : 2) * metrics.density)
+            )
+    }
+
+    private var surfaceOpacity: Double {
+        switch (style, colorScheme) {
+        case (.elevated, .dark): 0.74
+        case (.elevated, _): 0.54
+        case (.content, .dark): 0.58
+        case (.content, _): 0.34
+        }
+    }
+
+    private var strokeOpacity: Double {
+        style == .elevated ? 0.18 : 0.12
+    }
+
+    private var shadowOpacity: Double {
+        style == .elevated ? 0.055 : 0.018
     }
 }
 
@@ -1735,6 +1802,42 @@ private struct AgentBadge: View {
             .padding(.horizontal, 7 * metrics.density)
             .padding(.vertical, 3 * metrics.density)
             .background(tint.opacity(0.16), in: RoundedRectangle(cornerRadius: max(5, 6 * metrics.density), style: .continuous))
+    }
+}
+
+/// A single cost treatment keeps Models, Projects and Sessions visually
+/// aligned. Coral remains reserved for selection and chart emphasis instead
+/// of competing with every amount in long lists.
+private struct DashboardRowCost: View {
+    let costMicrosCNY: Int64
+    var detail: String? = nil
+    var isUnpriced = false
+    @Environment(\.dashboardLayoutMetrics) private var metrics
+
+    var body: some View {
+        HStack(spacing: max(2, 3 * metrics.density)) {
+            Text(isUnpriced ? "Unpriced" : dashboardCNY(costMicrosCNY))
+            if let detail, !isUnpriced {
+                Text("·")
+                Text(detail)
+            }
+        }
+        .font(metrics.font(.bodyMedium))
+        .fontWeight(.semibold)
+        .foregroundStyle(isUnpriced ? Color.orange : Color.tokenInk)
+        .monospacedDigit()
+        .lineLimit(1)
+        .allowsTightening(true)
+        .minimumScaleFactor(0.62)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+private struct DashboardRowDivider: View {
+    var body: some View {
+        Divider()
+            .overlay(Color.tokenLine)
+            .opacity(0.78)
     }
 }
 
@@ -1840,8 +1943,7 @@ private struct InlineEmptyState: View {
 
     var body: some View {
         VStack(spacing: max(9, 12 * metrics.density)) {
-            Image(systemName: "tray")
-                .font(metrics.iconFont(size: 28, weight: .light))
+            DashboardStateSymbol(symbol: "tray")
             Text(text)
                 .font(metrics.font(.bodyMedium))
         }
@@ -1855,8 +1957,18 @@ private struct LoadingStateView: View {
 
     var body: some View {
         VStack(spacing: max(10, 14 * metrics.density)) {
-            ProgressView().controlSize(.regular)
-            Text("正在读取本地用量…")
+            ProgressView()
+                .controlSize(.regular)
+                .frame(width: 44 * metrics.density, height: 44 * metrics.density)
+                .background(
+                    Color.tokenInk.opacity(0.045),
+                    in: RoundedRectangle(cornerRadius: max(10, 12 * metrics.density), style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: max(10, 12 * metrics.density), style: .continuous)
+                        .stroke(Color.tokenLine, lineWidth: 1)
+                }
+            Text("Loading local usage…")
                 .font(metrics.font(.bodyMedium))
                 .foregroundStyle(Color.tokenMuted)
         }
@@ -1870,13 +1982,12 @@ private struct EmptyUsageView: View {
 
     var body: some View {
         VStack(spacing: max(11, 15 * metrics.density)) {
-            Image(systemName: "chart.bar.xaxis")
-                .font(metrics.font(.emptyIcon))
-            Text("还没有可显示的用量")
+            DashboardStateSymbol(symbol: "chart.bar.xaxis")
+            Text("No usage to display")
                 .font(metrics.font(.emptyTitle))
-            Text("Token Usage 会自动读取本机 Agent 的会话记录。")
+            Text("Token Usage automatically reads local agent session records.")
                 .font(metrics.font(.emptyBody))
-            Button("重新读取", action: refresh)
+            Button("Reload", action: refresh)
                 .buttonStyle(.borderedProminent)
                 .tint(.dashboardCoral)
         }
@@ -1885,59 +1996,94 @@ private struct EmptyUsageView: View {
     }
 }
 
-private struct StaleDataBanner: View {
-    let message: String
+private struct DashboardStateSymbol: View {
+    let symbol: String
     @Environment(\.dashboardLayoutMetrics) private var metrics
 
     var body: some View {
-        HStack(spacing: max(6, 8 * metrics.density)) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(Color.orange)
-            Text("刷新失败，当前显示上次数据：\(message)")
-                .font(metrics.font(.smallMedium))
-                .foregroundStyle(Color.tokenInk)
-                .lineLimit(2)
-            Spacer()
-        }
-        .padding(.horizontal, metrics.compactCardInsets)
-        .frame(minHeight: max(30, 34 * metrics.density))
-        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: max(8, 10 * metrics.density), style: .continuous))
+        Image(systemName: symbol)
+            .font(metrics.iconFont(size: 23, weight: .light))
+            .foregroundStyle(Color.tokenMuted)
+            .frame(width: 44 * metrics.density, height: 44 * metrics.density)
+            .background(
+                Color.tokenInk.opacity(0.045),
+                in: RoundedRectangle(cornerRadius: max(10, 12 * metrics.density), style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: max(10, 12 * metrics.density), style: .continuous)
+                    .stroke(Color.tokenLine, lineWidth: 1)
+            }
+    }
+}
+
+private struct StaleDataBanner: View {
+    let message: String
+
+    var body: some View {
+        DashboardStatusBanner(
+            message: "Refresh failed. Showing the last successful data: \(message)",
+            symbol: "exclamationmark.triangle.fill",
+            tint: .orange,
+            lineLimit: 2
+        )
     }
 }
 
 private struct DataQualityBanner: View {
     let issues: [UsageCollectionIssue]
     let isUsingFallbackRate: Bool
-    @Environment(\.dashboardLayoutMetrics) private var metrics
-
     private var summary: String {
         var messages: [String] = []
-        if !issues.isEmpty { messages.append("\(issues.count) 个数据源读取异常") }
-        if isUsingFallbackRate { messages.append("人民币汇率使用缓存/默认值") }
+        if !issues.isEmpty { messages.append("\(issues.count) source read issues") }
+        if isUsingFallbackRate { messages.append("Using cached/default CNY exchange rate") }
         return messages.joined(separator: " · ")
     }
 
     private var details: String {
-        issues.map { "\($0.source)：\($0.message)" }.joined(separator: "\n")
+        issues.map { "\($0.source): \($0.message)" }.joined(separator: "\n")
     }
 
     var body: some View {
+        DashboardStatusBanner(
+            message: summary,
+            symbol: "exclamationmark.circle.fill",
+            tint: .orange,
+            helpText: details.isEmpty ? summary : details,
+            lineLimit: 1
+        )
+    }
+}
+
+private struct DashboardStatusBanner: View {
+    let message: String
+    let symbol: String
+    let tint: Color
+    var helpText: String? = nil
+    let lineLimit: Int
+    @Environment(\.dashboardLayoutMetrics) private var metrics
+
+    var body: some View {
         HStack(spacing: max(6, 8 * metrics.density)) {
-            Image(systemName: "exclamationmark.circle.fill")
-                .foregroundStyle(Color.orange)
-            Text(summary)
+            Image(systemName: symbol)
+                .foregroundStyle(tint)
+            Text(message)
                 .font(metrics.font(.smallMedium))
                 .foregroundStyle(Color.tokenInk)
-                .lineLimit(1)
+                .lineLimit(lineLimit)
             Spacer()
         }
         .padding(.horizontal, metrics.compactCardInsets)
-        .frame(minHeight: max(28, 32 * metrics.density))
+        .padding(.vertical, max(6, 7 * metrics.density))
+        .frame(minHeight: max(30, 34 * metrics.density))
         .background(
-            Color.orange.opacity(0.10),
+            tint.opacity(0.10),
             in: RoundedRectangle(cornerRadius: max(8, 10 * metrics.density), style: .continuous)
         )
-        .help(details.isEmpty ? summary : details)
+        .overlay {
+            RoundedRectangle(cornerRadius: max(8, 10 * metrics.density), style: .continuous)
+                .stroke(tint.opacity(0.20), lineWidth: 1)
+        }
+        .help(helpText ?? message)
     }
 }
 

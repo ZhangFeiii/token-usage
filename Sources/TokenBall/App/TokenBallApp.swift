@@ -140,7 +140,7 @@ final class TokenUsageController: NSObject {
         menu.autoenablesItems = false
 
         let restartItem = NSMenuItem(
-            title: "重启 Token Usage",
+            title: "Restart Token Usage",
             action: #selector(restartApplication),
             keyEquivalent: ""
         )
@@ -150,7 +150,7 @@ final class TokenUsageController: NSObject {
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(
-            title: "退出 Token Usage",
+            title: "Quit Token Usage",
             action: #selector(quitApplication),
             keyEquivalent: "q"
         )
