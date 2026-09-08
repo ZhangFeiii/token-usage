@@ -1231,8 +1231,10 @@ private struct ModelBreakdownRow: View {
             }
             .frame(height: max(5, 7 * metrics.density))
             HStack(spacing: max(8, 11 * metrics.density)) {
-                Text("\(model.requestCount.formatted()) requests")
-                    .foregroundStyle(Color.tokenMuted)
+                CompactDetailMetric(
+                    title: "Requests",
+                    value: model.requestCount.formatted()
+                )
                 CompactTokenMetric(
                     title: "Fresh Input",
                     value: model.inputTokens,
@@ -1344,7 +1346,10 @@ private struct ProjectRow: View {
             }
             .frame(height: max(5, 6 * metrics.density))
             HStack(spacing: max(10, 15 * metrics.density)) {
-                Text("\(project.requestCount.formatted()) req")
+                CompactDetailMetric(
+                    title: "Requests",
+                    value: project.requestCount.formatted()
+                )
                 Text("\(TokenFormatter.compact(project.totalTokens)) tokens")
                 Text("\(project.activeDays) days")
                 if let lastUsed = project.lastUsed {
@@ -1482,7 +1487,10 @@ private struct SessionRow: View {
                 Text(timeRange)
                 Text(shortID)
                 Spacer()
-                Text("\(session.requestCount.formatted()) requests")
+                CompactDetailMetric(
+                    title: "Requests",
+                    value: session.requestCount.formatted()
+                )
             }
             .dashboardDetailText()
 
@@ -1638,6 +1646,25 @@ private struct AgentBadge: View {
             .padding(.horizontal, 7 * metrics.density)
             .padding(.vertical, 3 * metrics.density)
             .background(tint.opacity(0.16), in: RoundedRectangle(cornerRadius: max(5, 6 * metrics.density), style: .continuous))
+    }
+}
+
+/// Shared label/value treatment for compact metadata such as request counts.
+private struct CompactDetailMetric: View {
+    let title: String
+    let value: String
+    @Environment(\.dashboardLayoutMetrics) private var metrics
+
+    var body: some View {
+        HStack(spacing: max(3, 4 * metrics.density)) {
+            Text(title)
+                .foregroundStyle(Color.tokenMuted)
+            Text(value)
+                .foregroundStyle(Color.tokenInk)
+                .fontWeight(.medium)
+        }
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
