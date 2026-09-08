@@ -248,6 +248,7 @@ struct UsagePanelView: View {
 
 private struct DashboardSidebar: View {
     @Binding var selection: DashboardTab
+    @State private var hoveredTab: DashboardTab?
     @Environment(\.dashboardLayoutMetrics) private var metrics
 
     private var version: String {
@@ -282,16 +283,33 @@ private struct DashboardSidebar: View {
                                 .minimumScaleFactor(0.88)
                             Spacer(minLength: 0)
                         }
-                        .foregroundStyle(selection == tab ? Color.dashboardCoral : Color.tokenMuted)
+                        .foregroundStyle(
+                            selection == tab
+                                ? Color.dashboardCoral
+                                : (hoveredTab == tab ? Color.tokenInk : Color.tokenMuted)
+                        )
                         .padding(.horizontal, 10 * metrics.density)
                         .frame(maxWidth: .infinity, minHeight: metrics.navigationRowHeight, alignment: .leading)
                         .background {
-                            if selection == tab {
-                                RoundedRectangle(cornerRadius: metrics.navigationCornerRadius, style: .continuous)
-                                    .fill(Color.dashboardCoral.opacity(0.105))
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: metrics.navigationCornerRadius, style: .continuous)
-                                            .stroke(Color.dashboardCoral.opacity(0.30), lineWidth: 1)
+                            RoundedRectangle(
+                                cornerRadius: metrics.navigationCornerRadius,
+                                style: .continuous
+                            )
+                            .fill(
+                                selection == tab
+                                    ? Color.dashboardCoral.opacity(hoveredTab == tab ? 0.15 : 0.105)
+                                    : Color.tokenInk.opacity(hoveredTab == tab ? 0.065 : 0)
+                            )
+                            .overlay {
+                                if selection == tab {
+                                    RoundedRectangle(
+                                        cornerRadius: metrics.navigationCornerRadius,
+                                        style: .continuous
+                                    )
+                                    .stroke(
+                                        Color.dashboardCoral.opacity(hoveredTab == tab ? 0.42 : 0.30),
+                                        lineWidth: 1
+                                    )
                                 }
                             }
                         }
@@ -300,6 +318,14 @@ private struct DashboardSidebar: View {
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity, minHeight: metrics.navigationRowHeight)
                     .contentShape(Rectangle())
+                    .onHover { isInside in
+                        if isInside {
+                            hoveredTab = tab
+                        } else if hoveredTab == tab {
+                            hoveredTab = nil
+                        }
+                    }
+                    .animation(.easeOut(duration: 0.11), value: hoveredTab)
                 }
             }
             .padding(.horizontal, metrics.sidebarNavigationPadding)
