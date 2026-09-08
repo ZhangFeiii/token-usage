@@ -1353,6 +1353,7 @@ private struct SessionsDashboard: View {
                 }
             }
         }
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private func dateButton(symbol: String, offset: Int) -> some View {
