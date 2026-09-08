@@ -209,12 +209,18 @@ struct UsagePanelView: View {
     private var content: some View {
         if !viewModel.hasLoaded {
             LoadingStateView()
-        } else if viewModel.snapshot.agents.isEmpty, viewModel.dashboard.totalTokens == 0 {
+        } else if viewModel.dashboard.totalTokens == 0 {
             EmptyUsageView(refresh: { Task { await viewModel.refresh() } })
         } else {
             VStack(spacing: 10) {
                 if let message = viewModel.errorMessage {
                     StaleDataBanner(message: message)
+                }
+                if !viewModel.collectionIssues.isEmpty || viewModel.isUsingFallbackExchangeRate {
+                    DataQualityBanner(
+                        issues: viewModel.collectionIssues,
+                        isUsingFallbackRate: viewModel.isUsingFallbackExchangeRate
+                    )
                 }
 
                 switch selectedTab {
@@ -338,7 +344,16 @@ private struct OverviewDashboard: View {
     }
 
     private var estimatedTodayCost: Int64 {
-        let estimate = Double(snapshot.currentHourCostMicrosCNY) * 24
+        let calendar = Calendar.autoupdatingCurrent
+        let now = snapshot.generatedAt
+        let tomorrow = calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: calendar.startOfDay(for: now)
+        ) ?? now
+        let remainingHours = max(0, tomorrow.timeIntervalSince(now) / 3_600)
+        let estimate = Double(today.costMicrosCNY)
+            + Double(snapshot.rollingHourCostMicrosCNY) * remainingHours
         return estimate.isFinite ? Int64(min(Double(Int64.max), estimate.rounded())) : 0
     }
 
@@ -384,7 +399,7 @@ private struct OverviewDashboard: View {
                         VStack(alignment: .leading, spacing: max(10, 13 * metrics.density)) {
                             Text("PACE")
                                 .dashboardSectionTitle()
-                            PaceRow(title: "本小时速率", value: hourlyRateText)
+                            PaceRow(title: "近 60 分钟速率", value: hourlyRateText)
                             PaceRow(title: "预计今日总额", value: dashboardCNY(estimatedTodayCost))
                             PaceRow(
                                 title: "均次成本",
@@ -403,7 +418,7 @@ private struct OverviewDashboard: View {
     }
 
     private var hourlyRateText: String {
-        dashboardCNY(snapshot.currentHourCostMicrosCNY) + "/hr"
+        dashboardCNY(snapshot.rollingHourCostMicrosCNY) + "/hr"
     }
 }
 
@@ -930,8 +945,13 @@ private struct ModelsDashboard: View {
 
     var body: some View {
         let visibleModels = models.filter { $0.totalTokens > 0 || $0.costMicrosCNY > 0 }
-        let topModels = Array(visibleModels.prefix(8))
+        let pricedModels = visibleModels.filter { $0.costMicrosCNY > 0 }
+        let topModels = Array(pricedModels.prefix(8))
+        let displayedCost = topModels.reduce(Int64.zero) { $0.saturatingAdd($1.costMicrosCNY) }
+        let unpricedModels = visibleModels.filter { $0.costMicrosCNY == 0 && $0.totalTokens > 0 }
+        let unpricedTokens = unpricedModels.reduce(Int64.zero) { $0.saturatingAdd($1.totalTokens) }
         let totalCost = visibleModels.reduce(Int64.zero) { $0.saturatingAdd($1.costMicrosCNY) }
+        let otherCost = max(0, totalCost - displayedCost)
         let totalInput = visibleModels.reduce(Int64.zero) {
             $0.saturatingAdd($1.inputTokens)
                 .saturatingAdd($1.cacheReadTokens)
@@ -946,7 +966,7 @@ private struct ModelsDashboard: View {
                         Text("COST BY MODEL · LAST 90 DAYS")
                             .dashboardSectionTitle()
                         HStack(spacing: max(12, 16 * metrics.density)) {
-                            DonutChart(models: topModels, totalCost: totalCost)
+                            DonutChart(models: topModels, totalCost: totalCost, otherCost: otherCost)
                                 .frame(width: metrics.donutSize, height: metrics.donutSize)
                             VStack(alignment: .leading, spacing: max(6, 9 * metrics.density)) {
                                 ForEach(Array(topModels.enumerated()), id: \.element.id) { index, model in
@@ -956,12 +976,27 @@ private struct ModelsDashboard: View {
                                         percent: fraction(model.costMicrosCNY, of: totalCost)
                                     )
                                 }
+                                if otherCost > 0 {
+                                    OtherModelLegendRow(
+                                        color: dashboardPalette[topModels.count % dashboardPalette.count],
+                                        percent: fraction(otherCost, of: totalCost)
+                                    )
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         Text("Total tokens: \(TokenFormatter.compact(totalInput)) input, \(TokenFormatter.compact(totalOutput)) output")
                             .font(metrics.font(.metricSubtitle))
                             .foregroundStyle(Color.tokenMuted)
+                        if !unpricedModels.isEmpty {
+                            Label(
+                                "\(unpricedModels.count) 个模型未计价 · \(TokenFormatter.compact(unpricedTokens)) tokens",
+                                systemImage: "exclamationmark.circle"
+                            )
+                            .font(metrics.font(.smallMedium))
+                            .foregroundStyle(Color.orange)
+                            .help("缺少公开价格的模型不会被当作免费模型计入费用。")
+                        }
                     }
                 }
 
@@ -992,6 +1027,7 @@ private struct ModelsDashboard: View {
 private struct DonutChart: View {
     let models: [DashboardModelUsage]
     let totalCost: Int64
+    let otherCost: Int64
     @Environment(\.dashboardLayoutMetrics) private var metrics
 
     var body: some View {
@@ -1039,15 +1075,38 @@ private struct DonutChart: View {
     private var donutSlices: [DonutSlice] {
         guard totalCost > 0 else { return [] }
         var start: CGFloat = 0
-        return models.enumerated().map { index, model in
-            let end = min(1, start + CGFloat(fraction(model.costMicrosCNY, of: totalCost)))
+        var costs = models.map(\.costMicrosCNY)
+        if otherCost > 0 { costs.append(otherCost) }
+        return costs.enumerated().map { index, cost in
+            let end = min(1, start + CGFloat(fraction(cost, of: totalCost)))
             defer { start = end }
             return DonutSlice(
-                id: "\(model.id)-\(index)",
+                id: index < models.count ? "\(models[index].id)-\(index)" : "other",
                 index: index,
                 start: start,
                 end: end
             )
+        }
+    }
+}
+
+private struct OtherModelLegendRow: View {
+    let color: Color
+    let percent: Double
+    @Environment(\.dashboardLayoutMetrics) private var metrics
+
+    var body: some View {
+        HStack(spacing: max(6, 9 * metrics.density)) {
+            Circle().fill(color)
+                .frame(width: 10 * metrics.typographyScale, height: 10 * metrics.typographyScale)
+            Text("Other")
+                .font(metrics.font(.bodyMedium))
+                .foregroundStyle(Color.tokenInk)
+            Spacer(minLength: 5)
+            Text(dashboardPercent(percent))
+                .font(metrics.font(.smallMedium))
+                .foregroundStyle(Color.tokenMuted)
+                .monospacedDigit()
         }
     }
 }
@@ -1107,7 +1166,9 @@ private struct ModelBreakdownRow: View {
                     .layoutPriority(1)
                 AgentBadge(agent: model.agent)
                 Spacer()
-                Text("\(dashboardCNY(model.costMicrosCNY)) · \(dashboardPercent(percent))")
+                Text(model.costMicrosCNY == 0 && model.totalTokens > 0
+                    ? "未计价"
+                    : "\(dashboardCNY(model.costMicrosCNY)) · \(dashboardPercent(percent))")
                     .font(metrics.font(.bodyMedium))
                     .foregroundStyle(Color.tokenMuted)
                     .monospacedDigit()
@@ -1583,6 +1644,42 @@ private struct StaleDataBanner: View {
         .padding(.horizontal, metrics.compactCardInsets)
         .frame(minHeight: max(30, 34 * metrics.density))
         .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: max(8, 10 * metrics.density), style: .continuous))
+    }
+}
+
+private struct DataQualityBanner: View {
+    let issues: [UsageCollectionIssue]
+    let isUsingFallbackRate: Bool
+    @Environment(\.dashboardLayoutMetrics) private var metrics
+
+    private var summary: String {
+        var messages: [String] = []
+        if !issues.isEmpty { messages.append("\(issues.count) 个数据源读取异常") }
+        if isUsingFallbackRate { messages.append("人民币汇率使用缓存/默认值") }
+        return messages.joined(separator: " · ")
+    }
+
+    private var details: String {
+        issues.map { "\($0.source)：\($0.message)" }.joined(separator: "\n")
+    }
+
+    var body: some View {
+        HStack(spacing: max(6, 8 * metrics.density)) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .foregroundStyle(Color.orange)
+            Text(summary)
+                .font(metrics.font(.smallMedium))
+                .foregroundStyle(Color.tokenInk)
+                .lineLimit(1)
+            Spacer()
+        }
+        .padding(.horizontal, metrics.compactCardInsets)
+        .frame(minHeight: max(28, 32 * metrics.density))
+        .background(
+            Color.orange.opacity(0.10),
+            in: RoundedRectangle(cornerRadius: max(8, 10 * metrics.density), style: .continuous)
+        )
+        .help(details.isEmpty ? summary : details)
     }
 }
 

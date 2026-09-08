@@ -276,6 +276,20 @@ final class DataLayerUpgradeTests: XCTestCase {
         XCTAssertEqual(codexSession.requestCount, 2)
         XCTAssertEqual(codexSession.cacheHitRate, 1.0 / 3.0, accuracy: 0.000_001)
         XCTAssertEqual(snapshot.currentHourCostMicrosCNY, 12_800_000)
+        XCTAssertEqual(snapshot.rollingHourCostMicrosCNY, 12_800_000)
+        let rollingHourCost = try await repository.fetchRollingHourCost(
+            now: context.now,
+            usdToCNYRate: 7.2
+        )
+        XCTAssertEqual(rollingHourCost, 12_800_000)
+
+        let fastSessions = try await repository.fetchSessions(
+            sessionDate: context.yesterday,
+            usdToCNYRate: 7.2,
+            calendar: context.calendar
+        )
+        XCTAssertEqual(fastSessions, snapshot.sessions)
+        XCTAssertEqual(Set(fastSessions.map(\.id)).count, 2)
     }
 
     func testCodexAndDeepSeekParsersAttachSessionMetadata() throws {

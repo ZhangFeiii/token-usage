@@ -59,6 +59,8 @@ final class OpenAIModelPricingTests: XCTestCase {
     }
 
     func testPricingReturnsZeroForModelsWithoutPublishedRates() {
+        XCTAssertTrue(OpenAIModelPricing.hasPublishedRate(modelID: "gpt-5.6-sol"))
+        XCTAssertFalse(OpenAIModelPricing.hasPublishedRate(modelID: "codex-auto-review"))
         XCTAssertEqual(
             OpenAIModelPricing.costMicrosUSD(
                 modelID: "codex-auto-review",
@@ -89,6 +91,19 @@ final class OpenAIModelPricingTests: XCTestCase {
         XCTAssertEqual(record.model, "gpt-5.6-luna")
         XCTAssertEqual(record.costMicrosUSD, 39)
         XCTAssertEqual(record.costMicrosCNY, 0)
+    }
+
+    func testCodexParserPricesDeepSeekRoutingInCNY() throws {
+        let jsonl = """
+        {"type":"turn_context","timestamp":"2026-08-23T02:00:00.000Z","payload":{"model":"deepseek-v4-flash"}}
+        {"type":"event_msg","timestamp":"2026-08-23T02:01:00.000Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":30,"cache_write_input_tokens":10,"output_tokens":20,"total_tokens":120}}}}
+        """
+
+        let record = try XCTUnwrap(
+            CodexJSONLUsageParser().parse(content: jsonl, sourceID: "deepseek-route").only
+        )
+        XCTAssertEqual(record.costMicrosUSD, 0)
+        XCTAssertEqual(record.costMicrosCNY, 393)
     }
 }
 

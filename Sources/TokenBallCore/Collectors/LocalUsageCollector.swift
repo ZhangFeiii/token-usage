@@ -62,6 +62,8 @@ public struct UsageCollectionReport: Equatable, Sendable {
 /// normalized results are skipped before import. Stable record IDs keep the
 /// statistics independent from any external accounting database.
 public actor LocalUsageCollector: UsageCollecting {
+    private static let fingerprintCacheVersion = 2
+
     public static var defaultCodexArchiveDirectoryURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex", isDirectory: true)
@@ -120,6 +122,8 @@ public actor LocalUsageCollector: UsageCollecting {
     private let additionalSources: [any UsageSourceProvider]
     private let fileManager: FileManager
     private let zstdDecompressor: any ZstdDecompressing
+    private let fingerprintCacheURL: URL?
+    private let fingerprintDatabaseURL: URL?
     private let codexParser = CodexJSONLUsageParser()
     private let genericJSONParser = GenericJSONUsageParser()
     private let deepSeekHarnessParser = DeepSeekHarnessJSONLUsageParser()
@@ -130,6 +134,7 @@ public actor LocalUsageCollector: UsageCollecting {
     private var didInspectOpenCodeDatabase = false
     private var importedAdditionalSourceRecords: [Int: [UsageRecord]] = [:]
     private var didAttemptLegacyCCSwitchPurge = false
+    private var didLoadPersistedFingerprints = false
 
     public init(
         store: any UsageRecordStore,
@@ -140,7 +145,9 @@ public actor LocalUsageCollector: UsageCollecting {
         jsonImportDirectoryURL: URL = LocalUsageCollector.defaultJSONImportDirectoryURL,
         fileManager: FileManager = .default,
         zstdDecompressor: any ZstdDecompressing = ZstdCommandDecompressor(),
-        additionalSources: [any UsageSourceProvider] = []
+        additionalSources: [any UsageSourceProvider] = [],
+        fingerprintCacheURL: URL? = nil,
+        fingerprintDatabaseURL: URL? = nil
     ) {
         self.store = store
         self.codexArchiveDirectoryURL = codexArchiveDirectoryURL
@@ -151,9 +158,12 @@ public actor LocalUsageCollector: UsageCollecting {
         self.additionalSources = additionalSources
         self.fileManager = fileManager
         self.zstdDecompressor = zstdDecompressor
+        self.fingerprintCacheURL = fingerprintCacheURL
+        self.fingerprintDatabaseURL = fingerprintDatabaseURL
     }
 
     public func collect() async -> UsageCollectionReport {
+        loadPersistedFingerprintsIfNeeded()
         var records: [UsageRecord] = []
         var issues: [UsageCollectionIssue] = []
         var processedFingerprints: [URL: FileFingerprint] = [:]
@@ -246,6 +256,11 @@ public actor LocalUsageCollector: UsageCollecting {
             }
         }
 
+        let shouldPersistFingerprints = !processedFingerprints.isEmpty
+            || !processedJSONFingerprints.isEmpty
+            || !processedDeepSeekHarnessFingerprints.isEmpty
+            || processedOpenCodeFingerprint != nil
+
         guard !records.isEmpty else {
             importedCodexFingerprints.merge(processedFingerprints) { _, new in new }
             importedJSONFingerprints.merge(processedJSONFingerprints) { _, new in new }
@@ -254,6 +269,9 @@ public actor LocalUsageCollector: UsageCollecting {
                 importedOpenCodeFingerprint = processedOpenCodeFingerprint
             }
             importedAdditionalSourceRecords.merge(processedAdditionalSourceRecords) { _, new in new }
+            if shouldPersistFingerprints, let cacheIssue = persistFingerprints() {
+                issues.append(cacheIssue)
+            }
             return UsageCollectionReport(
                 discoveredRecordCount: 0,
                 importedRecordCount: 0,
@@ -271,6 +289,9 @@ public actor LocalUsageCollector: UsageCollecting {
                 importedOpenCodeFingerprint = processedOpenCodeFingerprint
             }
             importedAdditionalSourceRecords.merge(processedAdditionalSourceRecords) { _, new in new }
+            if shouldPersistFingerprints, let cacheIssue = persistFingerprints() {
+                issues.append(cacheIssue)
+            }
             return UsageCollectionReport(
                 discoveredRecordCount: records.count,
                 importedRecordCount: result.importedCount,
@@ -510,6 +531,70 @@ public actor LocalUsageCollector: UsageCollecting {
         )
     }
 
+    private func loadPersistedFingerprintsIfNeeded() {
+        guard !didLoadPersistedFingerprints else { return }
+        didLoadPersistedFingerprints = true
+        guard
+            let fingerprintCacheURL,
+            let fingerprintDatabaseURL,
+            let databaseIdentity = fileIdentity(at: fingerprintDatabaseURL),
+            let data = try? Data(contentsOf: fingerprintCacheURL),
+            let cache = try? JSONDecoder().decode(PersistedFingerprintCache.self, from: data),
+            cache.version == Self.fingerprintCacheVersion,
+            cache.databaseIdentity == databaseIdentity
+        else { return }
+
+        importedCodexFingerprints = cache.codex.reduce(into: [:]) {
+            $0[URL(fileURLWithPath: $1.key)] = $1.value
+        }
+        importedJSONFingerprints = cache.json.reduce(into: [:]) {
+            $0[URL(fileURLWithPath: $1.key)] = $1.value
+        }
+        importedDeepSeekHarnessFingerprints = cache.deepSeekHarness.reduce(into: [:]) {
+            $0[URL(fileURLWithPath: $1.key)] = $1.value
+        }
+        importedOpenCodeFingerprint = cache.openCode
+        didInspectOpenCodeDatabase = true
+    }
+
+    /// Persists only fingerprints that have already been parsed and committed.
+    /// A parser-version bump invalidates this file, while the database inode
+    /// prevents a newly created/replaced store from inheriting stale skips.
+    private func persistFingerprints() -> UsageCollectionIssue? {
+        guard let fingerprintCacheURL, let fingerprintDatabaseURL else { return nil }
+        guard let databaseIdentity = fileIdentity(at: fingerprintDatabaseURL) else { return nil }
+        let cache = PersistedFingerprintCache(
+            version: Self.fingerprintCacheVersion,
+            databaseIdentity: databaseIdentity,
+            codex: Dictionary(uniqueKeysWithValues: importedCodexFingerprints.map { ($0.key.path, $0.value) }),
+            json: Dictionary(uniqueKeysWithValues: importedJSONFingerprints.map { ($0.key.path, $0.value) }),
+            deepSeekHarness: Dictionary(
+                uniqueKeysWithValues: importedDeepSeekHarnessFingerprints.map { ($0.key.path, $0.value) }
+            ),
+            openCode: importedOpenCodeFingerprint
+        )
+        do {
+            try fileManager.createDirectory(
+                at: fingerprintCacheURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(cache)
+            try data.write(to: fingerprintCacheURL, options: .atomic)
+            return nil
+        } catch {
+            return UsageCollectionIssue(source: "source-cache", message: error.localizedDescription)
+        }
+    }
+
+    private func fileIdentity(at url: URL) -> FileIdentity? {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path) else { return nil }
+        guard
+            let device = (attributes[.systemNumber] as? NSNumber)?.uint64Value,
+            let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
+        else { return nil }
+        return FileIdentity(device: device, inode: inode)
+    }
+
     /// Providers are allowed to return rows in whatever order their source
     /// uses. Canonicalizing by stable identity avoids treating a harmless
     /// ordering change as a data change while preserving all row fields for
@@ -524,12 +609,26 @@ public actor LocalUsageCollector: UsageCollecting {
     }
 }
 
-private struct FileFingerprint: Equatable, Sendable {
+private struct FileFingerprint: Codable, Equatable, Sendable {
     let size: Int
     let modificationTime: TimeInterval
 }
 
-private struct OpenCodeDatabaseFingerprint: Equatable, Sendable {
+private struct OpenCodeDatabaseFingerprint: Codable, Equatable, Sendable {
     let database: FileFingerprint?
     let wal: FileFingerprint?
+}
+
+private struct FileIdentity: Codable, Equatable, Sendable {
+    let device: UInt64
+    let inode: UInt64
+}
+
+private struct PersistedFingerprintCache: Codable, Sendable {
+    let version: Int
+    let databaseIdentity: FileIdentity
+    let codex: [String: FileFingerprint]
+    let json: [String: FileFingerprint]
+    let deepSeekHarness: [String: FileFingerprint]
+    let openCode: OpenCodeDatabaseFingerprint?
 }

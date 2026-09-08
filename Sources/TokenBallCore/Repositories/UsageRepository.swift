@@ -13,6 +13,20 @@ public protocol UsageRepository: Sendable {
         usdToCNYRate: Double,
         calendar: Calendar
     ) async throws -> DashboardSnapshot
+
+    /// Fetches only the session rows for one local day. Concrete stores can
+    /// use this fast path when the user changes dates without rebuilding all
+    /// 140 days of dashboard aggregates.
+    func fetchSessions(
+        sessionDate: Date,
+        usdToCNYRate: Double,
+        calendar: Calendar
+    ) async throws -> [DashboardSessionUsage]
+
+    func fetchRollingHourCost(
+        now: Date,
+        usdToCNYRate: Double
+    ) async throws -> Int64
 }
 
 public extension UsageRepository {
@@ -23,6 +37,31 @@ public extension UsageRepository {
         calendar: Calendar = .current
     ) async throws -> DashboardSnapshot {
         DashboardSnapshot.empty(now: now, sessionDate: sessionDate, calendar: calendar)
+    }
+
+    func fetchSessions(
+        sessionDate: Date,
+        usdToCNYRate: Double = 7.2,
+        calendar: Calendar = .current
+    ) async throws -> [DashboardSessionUsage] {
+        try await fetchDashboard(
+            now: Date(),
+            sessionDate: sessionDate,
+            usdToCNYRate: usdToCNYRate,
+            calendar: calendar
+        ).sessions
+    }
+
+    func fetchRollingHourCost(
+        now: Date = Date(),
+        usdToCNYRate: Double = 7.2
+    ) async throws -> Int64 {
+        try await fetchDashboard(
+            now: now,
+            sessionDate: now,
+            usdToCNYRate: usdToCNYRate,
+            calendar: .current
+        ).rollingHourCostMicrosCNY
     }
 }
 
@@ -252,7 +291,7 @@ public actor SQLiteUsageRepository: UsageRecordStore {
         "request_count"
     ]
 
-    private let databaseURL: URL
+    public nonisolated let databaseURL: URL
     private let busyTimeoutMilliseconds: Int32
 
     public init(
@@ -561,68 +600,7 @@ public actor SQLiteUsageRepository: UsageRecordStore {
         // Include all rows needed for the three rolling views in one read.
         let lowerBound = min(dailyStart, selectedStart)
         let upperBound = max(tomorrow, selectedEnd)
-        let sql = """
-        SELECT
-            record_id,
-            agent,
-            model,
-            fresh_input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            cache_write_tokens,
-            cost_micros_usd,
-            cost_micros_cny,
-            recorded_at,
-            session_id,
-            session_title,
-            project_path,
-            session_started_at,
-            session_ended_at,
-            generation_duration_seconds,
-            request_count
-        FROM \(Self.tableName)
-        WHERE recorded_at >= ? AND recorded_at < ?
-        ORDER BY recorded_at ASC, record_id ASC
-        """
-
-        var statement: OpaquePointer?
-        let prepareResult = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareResult == SQLITE_OK, let statement else {
-            throw mapSQLiteError(code: prepareResult, message: errorMessage(from: database))
-        }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_double(statement, 1, lowerBound.timeIntervalSince1970)
-        sqlite3_bind_double(statement, 2, upperBound.timeIntervalSince1970)
-
-        var rows: [DashboardStoredRecord] = []
-        while true {
-            let stepResult = sqlite3_step(statement)
-            if stepResult == SQLITE_DONE { break }
-            guard stepResult == SQLITE_ROW else {
-                throw mapSQLiteError(code: stepResult, message: errorMessage(from: database))
-            }
-            rows.append(
-                DashboardStoredRecord(
-                    id: stringColumn(statement, index: 0, fallback: "record"),
-                    agent: stringColumn(statement, index: 1, fallback: "Unknown"),
-                    model: stringColumn(statement, index: 2, fallback: "Unknown model"),
-                    inputTokens: max(0, sqlite3_column_int64(statement, 3)),
-                    outputTokens: max(0, sqlite3_column_int64(statement, 4)),
-                    cacheReadTokens: max(0, sqlite3_column_int64(statement, 5)),
-                    cacheWriteTokens: max(0, sqlite3_column_int64(statement, 6)),
-                    costMicrosUSD: max(0, sqlite3_column_int64(statement, 7)),
-                    costMicrosCNY: max(0, sqlite3_column_int64(statement, 8)),
-                    recordedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9)),
-                    sessionID: optionalStringColumn(statement, index: 10),
-                    sessionTitle: optionalStringColumn(statement, index: 11),
-                    projectPath: optionalStringColumn(statement, index: 12),
-                    sessionStartedAt: optionalDateColumn(statement, index: 13),
-                    sessionEndedAt: optionalDateColumn(statement, index: 14),
-                    generationDurationSeconds: optionalDoubleColumn(statement, index: 15),
-                    requestCount: max(1, Int(sqlite3_column_int64(statement, 16)))
-                )
-            )
-        }
+        let rows = try readDashboardRows(database: database, start: lowerBound, end: upperBound)
 
         let safeRate = usdToCNYRate.isFinite && usdToCNYRate >= 0 ? usdToCNYRate : 7.2
         var currentHourComponents = calendar.dateComponents(
@@ -632,14 +610,20 @@ public actor SQLiteUsageRepository: UsageRecordStore {
         currentHourComponents.minute = 0
         currentHourComponents.second = 0
         let currentHourStart = calendar.date(from: currentHourComponents) ?? now
-        let currentHourCostMicrosCNY = rows.reduce(into: Int64(0)) { total, row in
-            guard row.recordedAt >= currentHourStart, row.recordedAt <= now else { return }
+        let rollingHourStart = now.addingTimeInterval(-3_600)
+        let hourlyCosts = rows.reduce(into: (clock: Int64(0), rolling: Int64(0))) { totals, row in
+            guard row.recordedAt <= now else { return }
             let cost = Self.cnyCost(
                 usdMicros: row.costMicrosUSD,
                 cnyMicros: row.costMicrosCNY,
                 rate: safeRate
             )
-            total = TokenArithmetic.addingWithoutOverflow(total, cost)
+            if row.recordedAt >= currentHourStart {
+                totals.clock = TokenArithmetic.addingWithoutOverflow(totals.clock, cost)
+            }
+            if row.recordedAt >= rollingHourStart {
+                totals.rolling = TokenArithmetic.addingWithoutOverflow(totals.rolling, cost)
+            }
         }
         let dailyDays = (-139...0).compactMap {
             calendar.date(byAdding: .day, value: $0, to: today)
@@ -720,53 +704,7 @@ public actor SQLiteUsageRepository: UsageRecordStore {
                 costMicrosCNY: bucket.costMicrosCNY
             )
         }.sorted(by: Self.dashboardProjectSort)
-        let sessions = sessionBuckets.values.map { bucket in
-            // Only use response-level active windows. Lifecycle timestamps are
-            // still shown in the session header, but they intentionally do
-            // not participate in tok/s because they include user pauses,
-            // tool execution, and cross-day idle time.
-            let output = Double(bucket.outputTokens)
-            let speed: Double?
-            if bucket.unmeasuredOutputTokens == 0,
-               bucket.generationDurationSeconds > 0,
-               bucket.generationDurationSeconds.isFinite {
-                speed = output / bucket.generationDurationSeconds
-            } else {
-                speed = nil
-            }
-            // Cache hit is the share of all input-side tokens served from the
-            // read cache. Cache writes are input tokens too, so they belong in
-            // the denominator even though they are not hits.
-            let inputWithRead = bucket.inputTokens.addingReportingOverflow(bucket.cacheReadTokens)
-            let denominator: (partialValue: Int64, overflow: Bool)
-            if inputWithRead.overflow {
-                denominator = (Int64.max, true)
-            } else {
-                denominator = inputWithRead.partialValue.addingReportingOverflow(bucket.cacheWriteTokens)
-            }
-            let inputTotal = denominator.overflow ? Double.greatestFiniteMagnitude : Double(denominator.partialValue)
-            let cacheHit = inputTotal > 0 ? Double(bucket.cacheReadTokens) / inputTotal : 0
-            return DashboardSessionUsage(
-                sessionID: bucket.sessionID,
-                sessionTitle: bucket.title,
-                projectPath: bucket.projectPath,
-                agent: bucket.agent,
-                model: bucket.model,
-                sessionStartedAt: bucket.startedAt,
-                sessionEndedAt: bucket.endedAt,
-                inputTokens: bucket.inputTokens,
-                outputTokens: bucket.outputTokens,
-                cacheWriteTokens: bucket.cacheWriteTokens,
-                cacheReadTokens: bucket.cacheReadTokens,
-                requestCount: bucket.requestCount,
-                costMicrosCNY: bucket.costMicrosCNY,
-                tokensPerSecond: speed,
-                cacheHitRate: cacheHit
-            )
-        }.sorted {
-            if $0.costMicrosCNY != $1.costMicrosCNY { return $0.costMicrosCNY > $1.costMicrosCNY }
-            return $0.sessionID.localizedCaseInsensitiveCompare($1.sessionID) == .orderedAscending
-        }
+        let sessions = Self.dashboardSessions(from: sessionBuckets.values)
 
         return DashboardSnapshot(
             generatedAt: now,
@@ -776,8 +714,78 @@ public actor SQLiteUsageRepository: UsageRecordStore {
             projectUsage: projects,
             sessions: sessions,
             usdToCNYRate: safeRate,
-            currentHourCostMicrosCNY: currentHourCostMicrosCNY
+            currentHourCostMicrosCNY: hourlyCosts.clock,
+            rollingHourCostMicrosCNY: hourlyCosts.rolling
         )
+    }
+
+    /// Reads and aggregates only one local day's rows. This avoids repeating
+    /// the 140-day dashboard scan whenever the Sessions date changes.
+    public func fetchSessions(
+        sessionDate: Date,
+        usdToCNYRate: Double = 7.2,
+        calendar: Calendar = .current
+    ) async throws -> [DashboardSessionUsage] {
+        let database = try openDatabase()
+        defer { sqlite3_close(database) }
+
+        let start = calendar.startOfDay(for: sessionDate)
+        guard let end = calendar.date(byAdding: .day, value: 1, to: start) else {
+            throw UsageRepositoryError.queryFailed(message: "无法计算会话日期范围")
+        }
+
+        let rows = try readDashboardRows(database: database, start: start, end: end)
+        let safeRate = usdToCNYRate.isFinite && usdToCNYRate >= 0 ? usdToCNYRate : 7.2
+        var buckets: [String: DashboardSessionBucket] = [:]
+        for row in rows {
+            let sessionID = row.sessionID?.isEmpty == false ? row.sessionID! : "record:\(row.id)"
+            let sourceID = AgentIdentity.resolve(row.agent).id
+            let key = "\(sourceID):\(sessionID)"
+            let costCNY = Self.cnyCost(
+                usdMicros: row.costMicrosUSD,
+                cnyMicros: row.costMicrosCNY,
+                rate: safeRate
+            )
+            buckets[key, default: DashboardSessionBucket(key: key, sessionID: sessionID)].add(
+                row: row,
+                costMicrosCNY: costCNY,
+                calendar: calendar
+            )
+        }
+        return Self.dashboardSessions(from: buckets.values)
+    }
+
+    public func fetchRollingHourCost(
+        now: Date = Date(),
+        usdToCNYRate: Double = 7.2
+    ) async throws -> Int64 {
+        let database = try openDatabase()
+        defer { sqlite3_close(database) }
+        let sql = """
+        SELECT
+            COALESCE(TOTAL(cost_micros_usd), 0),
+            COALESCE(TOTAL(cost_micros_cny), 0)
+        FROM \(Self.tableName)
+        WHERE recorded_at >= ? AND recorded_at <= ?
+        """
+        var statement: OpaquePointer?
+        let prepareResult = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+        guard prepareResult == SQLITE_OK, let statement else {
+            throw mapSQLiteError(code: prepareResult, message: errorMessage(from: database))
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, now.addingTimeInterval(-3_600).timeIntervalSince1970)
+        sqlite3_bind_double(statement, 2, now.timeIntervalSince1970)
+        let stepResult = sqlite3_step(statement)
+        guard stepResult == SQLITE_ROW else {
+            throw mapSQLiteError(code: stepResult, message: errorMessage(from: database))
+        }
+        let usd = sqlite3_column_double(statement, 0)
+        let cny = sqlite3_column_double(statement, 1)
+        let safeRate = usdToCNYRate.isFinite && usdToCNYRate >= 0 ? usdToCNYRate : 7.2
+        let total = (max(0, usd) * safeRate + max(0, cny)).rounded()
+        guard total.isFinite, total < Double(Int64.max) else { return Int64.max }
+        return max(0, Int64(total))
     }
 
     private func importRecordsSync(
@@ -1178,6 +1186,110 @@ public actor SQLiteUsageRepository: UsageRecordStore {
         guard sqlite3_column_type(statement, index) != SQLITE_NULL else { return nil }
         let value = sqlite3_column_double(statement, index)
         return value.isFinite && value > 0 ? value : nil
+    }
+
+    private func readDashboardRows(
+        database: OpaquePointer,
+        start: Date,
+        end: Date
+    ) throws -> [DashboardStoredRecord] {
+        let sql = """
+        SELECT
+            record_id, agent, model, fresh_input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens, cost_micros_usd,
+            cost_micros_cny, recorded_at, session_id, session_title,
+            project_path, session_started_at, session_ended_at,
+            generation_duration_seconds, request_count
+        FROM \(Self.tableName)
+        WHERE recorded_at >= ? AND recorded_at < ?
+        ORDER BY recorded_at ASC, record_id ASC
+        """
+        var statement: OpaquePointer?
+        let prepareResult = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+        guard prepareResult == SQLITE_OK, let statement else {
+            throw mapSQLiteError(code: prepareResult, message: errorMessage(from: database))
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, start.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 2, end.timeIntervalSince1970)
+
+        var rows: [DashboardStoredRecord] = []
+        while true {
+            let stepResult = sqlite3_step(statement)
+            if stepResult == SQLITE_DONE { break }
+            guard stepResult == SQLITE_ROW else {
+                throw mapSQLiteError(code: stepResult, message: errorMessage(from: database))
+            }
+            rows.append(
+                DashboardStoredRecord(
+                    id: stringColumn(statement, index: 0, fallback: "record"),
+                    agent: stringColumn(statement, index: 1, fallback: "Unknown"),
+                    model: stringColumn(statement, index: 2, fallback: "Unknown model"),
+                    inputTokens: max(0, sqlite3_column_int64(statement, 3)),
+                    outputTokens: max(0, sqlite3_column_int64(statement, 4)),
+                    cacheReadTokens: max(0, sqlite3_column_int64(statement, 5)),
+                    cacheWriteTokens: max(0, sqlite3_column_int64(statement, 6)),
+                    costMicrosUSD: max(0, sqlite3_column_int64(statement, 7)),
+                    costMicrosCNY: max(0, sqlite3_column_int64(statement, 8)),
+                    recordedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9)),
+                    sessionID: optionalStringColumn(statement, index: 10),
+                    sessionTitle: optionalStringColumn(statement, index: 11),
+                    projectPath: optionalStringColumn(statement, index: 12),
+                    sessionStartedAt: optionalDateColumn(statement, index: 13),
+                    sessionEndedAt: optionalDateColumn(statement, index: 14),
+                    generationDurationSeconds: optionalDoubleColumn(statement, index: 15),
+                    requestCount: max(1, Int(sqlite3_column_int64(statement, 16)))
+                )
+            )
+        }
+        return rows
+    }
+
+    private static func dashboardSessions<S: Sequence>(
+        from buckets: S
+    ) -> [DashboardSessionUsage] where S.Element == DashboardSessionBucket {
+        buckets.map { bucket in
+            let output = Double(bucket.outputTokens)
+            let speed: Double?
+            if bucket.unmeasuredOutputTokens == 0,
+               bucket.generationDurationSeconds > 0,
+               bucket.generationDurationSeconds.isFinite {
+                speed = output / bucket.generationDurationSeconds
+            } else {
+                speed = nil
+            }
+            let inputWithRead = bucket.inputTokens.addingReportingOverflow(bucket.cacheReadTokens)
+            let denominator: (partialValue: Int64, overflow: Bool)
+            if inputWithRead.overflow {
+                denominator = (Int64.max, true)
+            } else {
+                denominator = inputWithRead.partialValue.addingReportingOverflow(bucket.cacheWriteTokens)
+            }
+            let inputTotal = denominator.overflow
+                ? Double.greatestFiniteMagnitude
+                : Double(denominator.partialValue)
+            let cacheHit = inputTotal > 0 ? Double(bucket.cacheReadTokens) / inputTotal : 0
+            return DashboardSessionUsage(
+                sessionID: bucket.sessionID,
+                sessionTitle: bucket.title,
+                projectPath: bucket.projectPath,
+                agent: bucket.agent,
+                model: bucket.model,
+                sessionStartedAt: bucket.startedAt,
+                sessionEndedAt: bucket.endedAt,
+                inputTokens: bucket.inputTokens,
+                outputTokens: bucket.outputTokens,
+                cacheWriteTokens: bucket.cacheWriteTokens,
+                cacheReadTokens: bucket.cacheReadTokens,
+                requestCount: bucket.requestCount,
+                costMicrosCNY: bucket.costMicrosCNY,
+                tokensPerSecond: speed,
+                cacheHitRate: cacheHit
+            )
+        }.sorted {
+            if $0.costMicrosCNY != $1.costMicrosCNY { return $0.costMicrosCNY > $1.costMicrosCNY }
+            return $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending
+        }
     }
 
     private static func cnyCost(usdMicros: Int64, cnyMicros: Int64, rate: Double) -> Int64 {

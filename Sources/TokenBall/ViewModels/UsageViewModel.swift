@@ -3,7 +3,6 @@ import TokenBallCore
 
 @MainActor
 final class UsageViewModel: ObservableObject {
-    @Published private(set) var snapshot: UsageSnapshot = .empty()
     @Published private(set) var dashboard: DashboardSnapshot = .empty()
     @Published private(set) var selectedSessionDate = Calendar.autoupdatingCurrent.startOfDay(for: Date())
     @Published private(set) var isRefreshing = false
@@ -13,6 +12,7 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var recoverySuggestion: String?
     @Published private(set) var exchangeRateUpdatedAt: Date?
     @Published private(set) var isUsingFallbackExchangeRate = false
+    @Published private(set) var collectionIssues: [UsageCollectionIssue] = []
 
     private let repository: any UsageRepository
     private let collector: (any UsageCollecting)?
@@ -24,6 +24,10 @@ final class UsageViewModel: ObservableObject {
     /// timer tick.
     private var refreshInProgress = false
     private var usdToCNYRate = 7.2
+    private var lastDashboardDay: Date?
+    private var lastTimeZoneIdentifier: String?
+    private var sessionCache: [Date: [DashboardSessionUsage]] = [:]
+    private var sessionLoadGeneration = 0
 
     var todayCostMicrosCNY: Int64 {
         dashboard.today?.costMicrosCNY ?? 0
@@ -39,7 +43,18 @@ final class UsageViewModel: ObservableObject {
         if let collector {
             self.collector = collector
         } else if let store = repository as? any UsageRecordStore {
-            self.collector = LocalUsageCollector(store: store)
+            if let sqliteRepository = repository as? SQLiteUsageRepository {
+                let cacheURL = sqliteRepository.databaseURL
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("source-fingerprints.json", isDirectory: false)
+                self.collector = LocalUsageCollector(
+                    store: store,
+                    fingerprintCacheURL: cacheURL,
+                    fingerprintDatabaseURL: sqliteRepository.databaseURL
+                )
+            } else {
+                self.collector = LocalUsageCollector(store: store)
+            }
         } else {
             self.collector = nil
         }
@@ -88,6 +103,11 @@ final class UsageViewModel: ObservableObject {
         }
 
         let now = Date()
+        let calendar = Calendar.autoupdatingCurrent
+        let currentDay = calendar.startOfDay(for: now)
+        let currentTimeZoneIdentifier = calendar.timeZone.identifier
+        let dayChanged = lastDashboardDay.map { !calendar.isDate($0, inSameDayAs: currentDay) } ?? true
+        let timeZoneChanged = lastTimeZoneIdentifier.map { $0 != currentTimeZoneIdentifier } ?? false
         let exchangeRate = await exchangeRateProvider.currentRate(now: now)
         let exchangeRateChanged = exchangeRate.rate != usdToCNYRate
             || exchangeRate.isFallback != isUsingFallbackExchangeRate
@@ -109,29 +129,57 @@ final class UsageViewModel: ObservableObject {
         if let collector {
             let report = await collector.collect()
             dataChanged = report.dataChanged
+            if collectionIssues != report.issues {
+                collectionIssues = report.issues
+            }
         } else {
             dataChanged = true
+            if !collectionIssues.isEmpty {
+                collectionIssues = []
+            }
         }
 
-        guard forceRead || !hasLoaded || dataChanged || exchangeRateChanged else {
+        let requiresFullRead = forceRead || !hasLoaded || dataChanged
+            || exchangeRateChanged || dayChanged || timeZoneChanged
+        guard requiresFullRead else {
+            do {
+                let rollingCost = try await repository.fetchRollingHourCost(
+                    now: now,
+                    usdToCNYRate: usdToCNYRate
+                )
+                if rollingCost != dashboard.rollingHourCostMicrosCNY {
+                    dashboard = dashboard.updatingRollingHourCost(rollingCost, generatedAt: now)
+                }
+            } catch {
+                // Keep the last good dashboard. The next full refresh will
+                // surface a repository error with recovery guidance.
+            }
             return
         }
 
+        if dataChanged || exchangeRateChanged || dayChanged || timeZoneChanged {
+            sessionCache.removeAll(keepingCapacity: true)
+        }
+        if let lastDashboardDay,
+           (dayChanged || timeZoneChanged),
+           calendar.isDate(selectedSessionDate, inSameDayAs: lastDashboardDay) {
+            selectedSessionDate = currentDay
+        }
+
         do {
-            let newSnapshot = try await repository.fetchUsage(now: now, calendar: .current)
             let newDashboard = try await repository.fetchDashboard(
                 now: now,
                 sessionDate: selectedSessionDate,
                 usdToCNYRate: usdToCNYRate,
                 calendar: .autoupdatingCurrent
             )
-            if snapshot != newSnapshot {
-                snapshot = newSnapshot
-            }
             if dashboard != newDashboard {
                 dashboard = newDashboard
             }
-            let generatedAt = newSnapshot.generatedAt
+            sessionCache[newDashboard.sessionDate] = newDashboard.sessions
+            lastDashboardDay = currentDay
+            lastTimeZoneIdentifier = currentTimeZoneIdentifier
+            let generatedAt = newDashboard.generatedAt
             if lastSuccessfulRefresh != generatedAt {
                 lastSuccessfulRefresh = generatedAt
             }
@@ -155,9 +203,40 @@ final class UsageViewModel: ObservableObject {
     }
 
     func selectSessionDate(_ date: Date) async {
-        let normalized = Calendar.autoupdatingCurrent.startOfDay(for: date)
+        let calendar = Calendar.autoupdatingCurrent
+        let normalized = calendar.startOfDay(for: date)
         guard normalized != selectedSessionDate else { return }
         selectedSessionDate = normalized
-        await refresh()
+        sessionLoadGeneration += 1
+        let generation = sessionLoadGeneration
+
+        if let cached = sessionCache[normalized] {
+            dashboard = dashboard.replacingSessions(cached, sessionDate: normalized)
+            return
+        }
+
+        isRefreshing = true
+        defer {
+            if generation == sessionLoadGeneration {
+                isRefreshing = false
+            }
+        }
+        do {
+            let sessions = try await repository.fetchSessions(
+                sessionDate: normalized,
+                usdToCNYRate: usdToCNYRate,
+                calendar: calendar
+            )
+            guard generation == sessionLoadGeneration, normalized == selectedSessionDate else { return }
+            sessionCache[normalized] = sessions
+            dashboard = dashboard.replacingSessions(sessions, sessionDate: normalized)
+            errorMessage = nil
+            recoverySuggestion = nil
+        } catch {
+            guard generation == sessionLoadGeneration else { return }
+            let localized = error as? LocalizedError
+            errorMessage = localized?.errorDescription ?? error.localizedDescription
+            recoverySuggestion = localized?.recoverySuggestion
+        }
     }
 }

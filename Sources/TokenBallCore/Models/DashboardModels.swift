@@ -168,7 +168,10 @@ public struct DashboardSessionUsage: Identifiable, Equatable, Sendable {
     public let tokensPerSecond: Double?
     public let cacheHitRate: Double
 
-    public var id: String { sessionID }
+    /// Source session IDs are not globally unique (Codex and OpenCode can
+    /// legitimately emit the same value), so include the canonical source in
+    /// SwiftUI identity as well as in repository grouping.
+    public var id: String { "\(agentIdentity.id):\(sessionID)" }
     public var title: String? { sessionTitle }
     public var project: String? { projectPath }
     public var modelID: String { model }
@@ -237,6 +240,9 @@ public struct DashboardSnapshot: Equatable, Sendable {
     public let usdToCNYRate: Double
     /// Cost observed during the local clock hour containing `generatedAt`.
     public let currentHourCostMicrosCNY: Int64
+    /// Cost observed in the rolling 60-minute window ending at `generatedAt`.
+    /// This is the value used for the dashboard's per-hour pace.
+    public let rollingHourCostMicrosCNY: Int64
 
     public var daily: [DailyDashboardUsage] { dailyUsage }
     public var models: [DashboardModelUsage] { modelUsage }
@@ -258,7 +264,8 @@ public struct DashboardSnapshot: Equatable, Sendable {
         projectUsage: [DashboardProjectUsage],
         sessions: [DashboardSessionUsage],
         usdToCNYRate: Double,
-        currentHourCostMicrosCNY: Int64 = 0
+        currentHourCostMicrosCNY: Int64 = 0,
+        rollingHourCostMicrosCNY: Int64 = 0
     ) {
         self.generatedAt = generatedAt
         self.sessionDate = sessionDate
@@ -268,6 +275,44 @@ public struct DashboardSnapshot: Equatable, Sendable {
         self.sessions = sessions
         self.usdToCNYRate = usdToCNYRate
         self.currentHourCostMicrosCNY = max(0, currentHourCostMicrosCNY)
+        self.rollingHourCostMicrosCNY = max(0, rollingHourCostMicrosCNY)
+    }
+
+    /// Replaces only the selected-day session payload. Activity, model and
+    /// project aggregates stay cached while the Sessions tab changes dates.
+    public func replacingSessions(
+        _ sessions: [DashboardSessionUsage],
+        sessionDate: Date,
+        generatedAt: Date = Date()
+    ) -> DashboardSnapshot {
+        DashboardSnapshot(
+            generatedAt: generatedAt,
+            sessionDate: sessionDate,
+            dailyUsage: dailyUsage,
+            modelUsage: modelUsage,
+            projectUsage: projectUsage,
+            sessions: sessions,
+            usdToCNYRate: usdToCNYRate,
+            currentHourCostMicrosCNY: currentHourCostMicrosCNY,
+            rollingHourCostMicrosCNY: rollingHourCostMicrosCNY
+        )
+    }
+
+    public func updatingRollingHourCost(
+        _ costMicrosCNY: Int64,
+        generatedAt: Date
+    ) -> DashboardSnapshot {
+        DashboardSnapshot(
+            generatedAt: generatedAt,
+            sessionDate: sessionDate,
+            dailyUsage: dailyUsage,
+            modelUsage: modelUsage,
+            projectUsage: projectUsage,
+            sessions: sessions,
+            usdToCNYRate: usdToCNYRate,
+            currentHourCostMicrosCNY: currentHourCostMicrosCNY,
+            rollingHourCostMicrosCNY: costMicrosCNY
+        )
     }
 
     public static func empty(

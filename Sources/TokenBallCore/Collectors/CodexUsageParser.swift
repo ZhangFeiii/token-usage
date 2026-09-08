@@ -5,6 +5,10 @@ import Foundation
 /// OpenCode sessions both use this table for GPT models; DeepSeek models are
 /// priced separately in CNY.
 public enum OpenAIModelPricing {
+    public static func hasPublishedRate(modelID: String) -> Bool {
+        rates(for: modelID) != nil
+    }
+
     public static func costMicrosUSD(
         modelID: String,
         freshInputTokens: Int64,
@@ -57,7 +61,7 @@ public enum OpenAIModelPricing {
         case "gpt-5", "gpt-5-low", "gpt-5-medium", "gpt-5-high", "gpt-5-minimal":
             return Rates(input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0)
         default:
-            // Models without a published rate (e.g. codex-auto-review) are free.
+            // Absence from the published table means "unpriced", not free.
             return nil
         }
     }
@@ -84,6 +88,10 @@ public struct CodexJSONLUsageParser: Sendable {
         fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let basicFormatter = ISO8601DateFormatter()
         basicFormatter.formatOptions = [.withInternetDateTime]
+        func parseDate(_ value: String?) -> Date? {
+            guard let value else { return nil }
+            return fractionalFormatter.date(from: value) ?? basicFormatter.date(from: value)
+        }
 
         var currentModel = "unknown"
         var previousTotal: TokenCounts?
@@ -109,8 +117,8 @@ public struct CodexJSONLUsageParser: Sendable {
                 let payload = envelope["payload"] as? [String: Any]
             else { continue }
 
-            let eventDate = Self.date(
-                from: (envelope["timestamp"] as? String)
+            let eventDate = parseDate(
+                (envelope["timestamp"] as? String)
                     ?? (payload["timestamp"] as? String)
             )
             if let eventDate {
@@ -132,8 +140,8 @@ public struct CodexJSONLUsageParser: Sendable {
                 projectPath = Self.nonEmptyString(
                     payload["cwd"] ?? payload["directory"] ?? payload["project_path"]
                 ) ?? projectPath
-                if let date = Self.date(
-                    from: payload["timestamp"] as? String
+                if let date = parseDate(
+                    payload["timestamp"] as? String
                         ?? envelope["timestamp"] as? String
                 ) {
                     sessionStartedAt = date
@@ -241,6 +249,14 @@ public struct CodexJSONLUsageParser: Sendable {
                         outputTokens: counts.outputTokens,
                         cacheReadTokens: counts.cacheReadTokens,
                         cacheWriteTokens: counts.cacheWriteTokens
+                    ),
+                    costMicrosCNY: DeepSeekHarnessPricing.costMicrosCNY(
+                        modelID: currentModel,
+                        freshInputTokens: freshInput,
+                        outputTokens: counts.outputTokens,
+                        cacheReadTokens: counts.cacheReadTokens,
+                        cacheWriteTokens: counts.cacheWriteTokens,
+                        recordedAt: recordedAt
                     ),
                     recordedAt: recordedAt,
                     sessionID: sessionID,
@@ -364,15 +380,6 @@ public struct CodexJSONLUsageParser: Sendable {
         guard let string = value as? String else { return nil }
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private static func date(from value: String?) -> Date? {
-        guard let value else { return nil }
-        let fractionalFormatter = ISO8601DateFormatter()
-        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let basicFormatter = ISO8601DateFormatter()
-        basicFormatter.formatOptions = [.withInternetDateTime]
-        return fractionalFormatter.date(from: value) ?? basicFormatter.date(from: value)
     }
 
     private static func title(from value: Any?) -> String? {

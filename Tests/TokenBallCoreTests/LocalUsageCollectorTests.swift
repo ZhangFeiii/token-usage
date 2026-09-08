@@ -133,7 +133,7 @@ final class LocalUsageCollectorTests: XCTestCase {
         XCTAssertEqual(gptRecord.costMicrosUSD, 47)
         XCTAssertEqual(gptRecord.costMicrosCNY, 0)
 
-        // Models without published rates stay free.
+        // Models without published rates stay unpriced (zero stored cost).
         let freeRow = OpenCodeSessionRow(
             id: "session-free",
             sessionAgent: "build",
@@ -204,6 +204,47 @@ final class LocalUsageCollectorTests: XCTestCase {
         XCTAssertEqual(unchangedReport.discoveredRecordCount, 0)
         XCTAssertEqual(unchangedReport.importedRecordCount, 0)
         XCTAssertTrue(unchangedReport.issues.isEmpty)
+    }
+
+    func testCollectorRestoresCommittedFingerprintsAcrossInstances() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TokenBallPersistentFingerprintTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let importURL = rootURL.appendingPathComponent("imports", isDirectory: true)
+        let databaseURL = rootURL.appendingPathComponent("usage.sqlite3")
+        let cacheURL = rootURL.appendingPathComponent("source-fingerprints.json")
+        try FileManager.default.createDirectory(at: importURL, withIntermediateDirectories: true)
+        try Data(
+            """
+            {"id":"persistent:1","agent":"external","model":"model","freshInputTokens":10,"outputTokens":2,"recordedAt":"2026-08-18T08:30:45Z"}
+            """.utf8
+        ).write(to: importURL.appendingPathComponent("external.json"))
+
+        let repository = SQLiteUsageRepository(databaseURL: databaseURL)
+        _ = try await repository.fetchUsage()
+        func makeCollector() -> LocalUsageCollector {
+            LocalUsageCollector(
+                store: repository,
+                codexArchiveDirectoryURL: rootURL.appendingPathComponent("missing-codex"),
+                codexSessionDirectoryURL: rootURL.appendingPathComponent("missing-sessions"),
+                openCodeDatabaseURL: rootURL.appendingPathComponent("missing-opencode.db"),
+                deepSeekHarnessSessionDirectoryURLs: [rootURL.appendingPathComponent("missing-dsh")],
+                jsonImportDirectoryURL: importURL,
+                fingerprintCacheURL: cacheURL,
+                fingerprintDatabaseURL: databaseURL
+            )
+        }
+
+        let first = await makeCollector().collect()
+        let afterRestart = await makeCollector().collect()
+
+        XCTAssertEqual(first.discoveredRecordCount, 1)
+        XCTAssertEqual(first.importedRecordCount, 1)
+        XCTAssertTrue(first.issues.isEmpty)
+        XCTAssertEqual(afterRestart.discoveredRecordCount, 0)
+        XCTAssertEqual(afterRestart.importedRecordCount, 0)
+        XCTAssertFalse(afterRestart.dataChanged)
+        XCTAssertTrue(afterRestart.issues.isEmpty)
     }
 
     func testCollectorCachesOpenCodeDatabaseUntilMainFileChanges() async throws {

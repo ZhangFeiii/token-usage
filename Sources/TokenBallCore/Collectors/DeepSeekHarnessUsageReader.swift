@@ -137,6 +137,25 @@ public struct DeepSeekHarnessJSONLUsageParser: Sendable {
     }
 
     public func parse(content: String, sourceID: String) -> [UsageRecord] {
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let basicFormatter = ISO8601DateFormatter()
+        basicFormatter.formatOptions = [.withInternetDateTime]
+        func parseDate(_ value: Any?) -> Date? {
+            if let number = value as? NSNumber {
+                let raw = number.doubleValue
+                guard raw.isFinite else { return nil }
+                return Date(timeIntervalSince1970: abs(raw) >= 10_000_000_000 ? raw / 1_000 : raw)
+            }
+            if let string = value as? String {
+                if let numeric = Double(string), numeric.isFinite {
+                    return Date(timeIntervalSince1970: abs(numeric) >= 10_000_000_000 ? numeric / 1_000 : numeric)
+                }
+                return fractionalFormatter.date(from: string) ?? basicFormatter.date(from: string)
+            }
+            return nil
+        }
+
         var modelID = "unknown"
         var chunkCandidates: [String: Candidate] = [:]
         var messageCandidates: [String: Candidate] = [:]
@@ -164,12 +183,12 @@ public struct DeepSeekHarnessJSONLUsageParser: Sendable {
                 event["cwd"] ?? event["directory"] ?? event["projectPath"]
                     ?? data["cwd"] ?? data["directory"] ?? data["projectPath"]
             ) ?? projectPath
-            let lineDate = date(from: event["time"] ?? event["timestamp"] ?? data["time"] ?? data["timestamp"])
+            let lineDate = parseDate(event["time"] ?? event["timestamp"] ?? data["time"] ?? data["timestamp"])
             if let lineDate {
                 if sessionStartedAt == nil || lineDate < sessionStartedAt! { sessionStartedAt = lineDate }
                 if sessionEndedAt == nil || lineDate > sessionEndedAt! { sessionEndedAt = lineDate }
             }
-            if let createdAt = date(from: event["createdAt"] ?? data["createdAt"]) {
+            if let createdAt = parseDate(event["createdAt"] ?? data["createdAt"]) {
                 sessionStartedAt = createdAt
             }
             if type.lowercased().contains("session/title") || type.lowercased() == "session_title" {
@@ -195,7 +214,7 @@ public struct DeepSeekHarnessJSONLUsageParser: Sendable {
             guard type == "assistant/chunk" || type == "assistant/message",
                   let key = usageKey(data: data),
                   let usage = usage(in: data, eventType: type),
-                  let timestamp = date(from: event["time"] ?? data["time"])
+                  let timestamp = parseDate(event["time"] ?? data["time"])
             else { continue }
 
             let messageModel = type == "assistant/message" ? model(from: data) : nil
@@ -306,24 +325,6 @@ public struct DeepSeekHarnessJSONLUsageParser: Sendable {
         return 0
     }
 
-    private func date(from value: Any?) -> Date? {
-        if let number = value as? NSNumber {
-            let raw = number.doubleValue
-            guard raw.isFinite else { return nil }
-            return Date(timeIntervalSince1970: abs(raw) >= 10_000_000_000 ? raw / 1_000 : raw)
-        }
-        if let string = value as? String {
-            if let numeric = Double(string), numeric.isFinite {
-                return Date(timeIntervalSince1970: abs(numeric) >= 10_000_000_000 ? numeric / 1_000 : numeric)
-            }
-            let fractionalFormatter = ISO8601DateFormatter()
-            fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let basicFormatter = ISO8601DateFormatter()
-            basicFormatter.formatOptions = [.withInternetDateTime]
-            return fractionalFormatter.date(from: string) ?? basicFormatter.date(from: string)
-        }
-        return nil
-    }
 }
 
 private struct Candidate: Sendable {
