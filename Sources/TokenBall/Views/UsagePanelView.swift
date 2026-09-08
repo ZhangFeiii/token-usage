@@ -20,7 +20,7 @@ private enum DashboardTextStyle {
     case sessionSummary
     case sessionTitle
     case sessionCost
-    case sessionMeta
+    case detailMeta
     case sessionDate
     case donutValue
     case donutLabel
@@ -47,7 +47,7 @@ private enum DashboardTextStyle {
         case .sessionSummary: 12
         case .sessionTitle: 14
         case .sessionCost: 12
-        case .sessionMeta: 11
+        case .detailMeta: 11
         case .sessionDate: 16
         case .donutValue: 20
         case .donutLabel: 11
@@ -133,6 +133,26 @@ private extension EnvironmentValues {
     var dashboardLayoutMetrics: DashboardLayoutMetrics {
         get { self[DashboardLayoutMetricsKey.self] }
         set { self[DashboardLayoutMetricsKey.self] = newValue }
+    }
+}
+
+private struct DashboardDetailTextModifier: ViewModifier {
+    @Environment(\.dashboardLayoutMetrics) private var metrics
+
+    func body(content: Content) -> some View {
+        content
+            .font(metrics.font(.detailMeta))
+            .foregroundStyle(Color.tokenMuted)
+            .monospacedDigit()
+            .lineLimit(1)
+            .allowsTightening(true)
+            .minimumScaleFactor(0.72)
+    }
+}
+
+private extension View {
+    func dashboardDetailText() -> some View {
+        modifier(DashboardDetailTextModifier())
     }
 }
 
@@ -1236,10 +1256,7 @@ private struct ModelBreakdownRow: View {
                     color: TokenMetricColors.cacheRead
                 )
             }
-                .font(metrics.font(.small))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
+            .dashboardDetailText()
         }
         .padding(.vertical, max(5, 7 * metrics.density))
     }
@@ -1334,12 +1351,7 @@ private struct ProjectRow: View {
                     Text("last \(lastUsed.formatted(.dateTime.year().month().day()))")
                 }
             }
-            .font(metrics.font(.small))
-            .foregroundStyle(Color.tokenMuted)
-            .monospacedDigit()
-            .lineLimit(1)
-            .allowsTightening(true)
-            .minimumScaleFactor(0.60)
+            .dashboardDetailText()
         }
         .padding(.vertical, max(8, 10 * metrics.density))
         .help(project.projectPath ?? "")
@@ -1472,12 +1484,7 @@ private struct SessionRow: View {
                 Spacer()
                 Text("\(session.requestCount.formatted()) requests")
             }
-            .font(metrics.font(.sessionMeta))
-            .foregroundStyle(Color.tokenMuted)
-            .monospacedDigit()
-            .lineLimit(1)
-            .allowsTightening(true)
-            .minimumScaleFactor(0.78)
+            .dashboardDetailText()
 
             TokenCompositionBar(session: session)
                 .frame(height: max(5, 6 * metrics.density))
@@ -1497,8 +1504,7 @@ private struct SessionRow: View {
                     }
                 }
             }
-            .font(metrics.font(.sessionMeta))
-            .monospacedDigit()
+            .dashboardDetailText()
         }
         .padding(.vertical, max(8, 11 * metrics.density))
         .help(session.projectPath ?? session.sessionID)
