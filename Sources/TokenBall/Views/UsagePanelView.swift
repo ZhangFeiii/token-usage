@@ -985,7 +985,7 @@ private struct ModelsDashboard: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        Text("Total tokens: \(TokenFormatter.compact(totalInput)) input, \(TokenFormatter.compact(totalOutput)) output")
+                        Text("Total Input \(TokenFormatter.compact(totalInput)) · Output \(TokenFormatter.compact(totalOutput))")
                             .font(metrics.font(.metricSubtitle))
                             .foregroundStyle(Color.tokenMuted)
                         if !unpricedModels.isEmpty {
@@ -1184,10 +1184,36 @@ private struct ModelBreakdownRow: View {
                 }
             }
             .frame(height: max(5, 7 * metrics.density))
-            Text("\(model.requestCount.formatted()) req   in \(TokenFormatter.compact(model.inputTokens))   out \(TokenFormatter.compact(model.outputTokens))   cache \(TokenFormatter.compact(model.cacheReadTokens))")
+            HStack(spacing: max(8, 11 * metrics.density)) {
+                Text("\(model.requestCount.formatted()) requests")
+                    .foregroundStyle(Color.tokenMuted)
+                CompactTokenMetric(
+                    title: "Fresh Input",
+                    value: model.inputTokens,
+                    color: TokenMetricColors.input
+                )
+                CompactTokenMetric(
+                    title: "Output",
+                    value: model.outputTokens,
+                    color: TokenMetricColors.output
+                )
+                if model.cacheWriteTokens > 0 {
+                    CompactTokenMetric(
+                        title: "Cache Write",
+                        value: model.cacheWriteTokens,
+                        color: TokenMetricColors.cacheWrite
+                    )
+                }
+                CompactTokenMetric(
+                    title: "Cache Read",
+                    value: model.cacheReadTokens,
+                    color: TokenMetricColors.cacheRead
+                )
+            }
                 .font(metrics.font(.small))
-                .foregroundStyle(Color.tokenMuted)
                 .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
         }
         .padding(.vertical, max(5, 7 * metrics.density))
     }
@@ -1418,7 +1444,7 @@ private struct SessionRow: View {
                 Text(timeRange)
                 Text(shortID)
                 Spacer()
-                Text("\(session.requestCount.formatted()) 次请求")
+                Text("\(session.requestCount.formatted()) requests")
             }
             .font(metrics.font(.sessionMeta))
             .foregroundStyle(Color.tokenMuted)
@@ -1460,44 +1486,28 @@ private struct SessionRow: View {
 
     @ViewBuilder
     private var tokenMetrics: some View {
-        sessionMetric(
-            title: "新输入",
+        CompactTokenMetric(
+            title: "Fresh Input",
             value: session.inputTokens,
-            color: .dashboardGreen
+            color: TokenMetricColors.input
         )
-        sessionMetric(
-            title: "输出",
+        CompactTokenMetric(
+            title: "Output",
             value: session.outputTokens,
-            color: .dashboardPurple
+            color: TokenMetricColors.output
         )
         if session.cacheWriteTokens > 0 {
-            sessionMetric(
-                title: "缓存写",
+            CompactTokenMetric(
+                title: "Cache Write",
                 value: session.cacheWriteTokens,
-                color: .dashboardOrange
+                color: TokenMetricColors.cacheWrite
             )
         }
-        sessionMetric(
-            title: "缓存读",
+        CompactTokenMetric(
+            title: "Cache Read",
             value: session.cacheReadTokens,
-            color: .dashboardBlue
+            color: TokenMetricColors.cacheRead
         )
-    }
-
-    private func sessionMetric(title: String, value: Int64, color: Color) -> some View {
-        HStack(spacing: max(3, 4 * metrics.density)) {
-            Circle()
-                .fill(color)
-                .frame(width: 5 * metrics.typographyScale, height: 5 * metrics.typographyScale)
-            Text(title)
-                .foregroundStyle(Color.tokenMuted)
-            Text(TokenFormatter.compact(value))
-                .foregroundStyle(Color.tokenInk)
-                .fontWeight(.medium)
-        }
-        .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
-        .help("\(title)：\(value.formatted()) tokens")
     }
 
     @ViewBuilder
@@ -1519,7 +1529,7 @@ private struct SessionRow: View {
     }
 
     private var cacheHitLabel: some View {
-        Text("命中 \(dashboardPercent(session.cacheHitRate))")
+        Text("Cache Hit \(dashboardPercent(session.cacheHitRate))")
             .foregroundStyle(Color.tokenMuted)
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
@@ -1534,10 +1544,18 @@ private struct TokenCompositionBar: View {
         GeometryReader { proxy in
             let total = max(1, Double(session.totalTokens))
             HStack(spacing: 2) {
-                Rectangle().fill(Color.dashboardGreen).frame(width: proxy.size.width * CGFloat(Double(session.inputTokens) / total))
-                Rectangle().fill(Color.dashboardOrange).frame(width: proxy.size.width * CGFloat(Double(session.cacheWriteTokens) / total))
-                Rectangle().fill(Color.dashboardPurple).frame(width: proxy.size.width * CGFloat(Double(session.outputTokens) / total))
-                Rectangle().fill(Color.dashboardBlue).frame(width: proxy.size.width * CGFloat(Double(session.cacheReadTokens) / total))
+                Rectangle().fill(TokenMetricColors.input).frame(
+                    width: proxy.size.width * CGFloat(Double(session.inputTokens) / total)
+                )
+                Rectangle().fill(TokenMetricColors.output).frame(
+                    width: proxy.size.width * CGFloat(Double(session.outputTokens) / total)
+                )
+                Rectangle().fill(TokenMetricColors.cacheRead).frame(
+                    width: proxy.size.width * CGFloat(Double(session.cacheReadTokens) / total)
+                )
+                Rectangle().fill(TokenMetricColors.cacheWrite).frame(
+                    width: proxy.size.width * CGFloat(Double(session.cacheWriteTokens) / total)
+                )
             }
             .clipShape(Capsule())
             .background(Color.primary.opacity(0.12), in: Capsule())
@@ -1591,6 +1609,38 @@ private struct AgentBadge: View {
     }
 }
 
+/// Shared compact token legend used by model and session details. Its labels,
+/// order and colors match `TokenBreakdownRows` on Overview.
+private struct CompactTokenMetric: View {
+    let title: String
+    let value: Int64
+    let color: Color
+    @Environment(\.dashboardLayoutMetrics) private var metrics
+
+    var body: some View {
+        HStack(spacing: max(3, 4 * metrics.density)) {
+            Circle()
+                .fill(color)
+                .frame(width: 5 * metrics.typographyScale, height: 5 * metrics.typographyScale)
+            Text(title)
+                .foregroundStyle(Color.tokenMuted)
+            Text(TokenFormatter.compact(value))
+                .foregroundStyle(Color.tokenInk)
+                .fontWeight(.medium)
+        }
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+        .help("\(title): \(value.formatted()) tokens")
+    }
+}
+
+private enum TokenMetricColors {
+    static let input = Color.dashboardBlue
+    static let output = Color.dashboardPurple
+    static let cacheRead = Color.dashboardGreen
+    static let cacheWrite = Color.dashboardOrange
+}
+
 private struct TokenBreakdownRows: View {
     let input: Int64
     let output: Int64
@@ -1600,10 +1650,10 @@ private struct TokenBreakdownRows: View {
 
     private var rows: [(String, Int64, Color)] {
         [
-            ("Cache Read", cacheRead, .dashboardGreen),
-            ("Cache Write", cacheWrite, .dashboardOrange),
-            ("Output", output, .dashboardPurple),
-            ("Input", input, .dashboardBlue)
+            ("Fresh Input", input, TokenMetricColors.input),
+            ("Output", output, TokenMetricColors.output),
+            ("Cache Read", cacheRead, TokenMetricColors.cacheRead),
+            ("Cache Write", cacheWrite, TokenMetricColors.cacheWrite)
         ]
     }
 
