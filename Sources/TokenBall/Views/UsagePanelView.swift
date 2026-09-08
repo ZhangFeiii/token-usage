@@ -156,6 +156,79 @@ private extension View {
     }
 }
 
+/// Keeps every compact label/value pair intact and moves whole metrics to the
+/// next line when the panel is too narrow. Typography therefore stays stable
+/// across display sizes instead of shrinking until it becomes unreadable.
+private struct WrappingMetricsLayout: Layout {
+    let horizontalSpacing: CGFloat
+    let verticalSpacing: CGFloat
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        let availableWidth = max(1, proposal.width ?? .greatestFiniteMagnitude)
+        let result = arrangement(
+            sizes: subviews.map { $0.sizeThatFits(.unspecified) },
+            availableWidth: availableWidth
+        )
+        return CGSize(
+            width: proposal.width ?? result.size.width,
+            height: result.size.height
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let result = arrangement(sizes: sizes, availableWidth: max(1, bounds.width))
+        for (index, subview) in subviews.enumerated() {
+            let size = sizes[index]
+            let position = result.positions[index]
+            subview.place(
+                at: CGPoint(x: bounds.minX + position.x, y: bounds.minY + position.y),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: size.width, height: size.height)
+            )
+        }
+    }
+
+    private func arrangement(
+        sizes: [CGSize],
+        availableWidth: CGFloat
+    ) -> (positions: [CGPoint], size: CGSize) {
+        var positions: [CGPoint] = []
+        positions.reserveCapacity(sizes.count)
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var usedWidth: CGFloat = 0
+
+        for size in sizes {
+            let spacing = x > 0 ? horizontalSpacing : 0
+            if x > 0, x + spacing + size.width > availableWidth {
+                y += lineHeight + verticalSpacing
+                x = 0
+                lineHeight = 0
+            } else {
+                x += spacing
+            }
+            positions.append(CGPoint(x: x, y: y))
+            x += size.width
+            lineHeight = max(lineHeight, size.height)
+            usedWidth = max(usedWidth, x)
+        }
+
+        let usedHeight = sizes.isEmpty ? 0 : y + lineHeight
+        return (positions, CGSize(width: usedWidth, height: usedHeight))
+    }
+}
+
 private enum DashboardTab: String, CaseIterable, Identifiable {
     case overview = "Overview"
     case activity = "Activity"
@@ -1230,7 +1303,10 @@ private struct ModelBreakdownRow: View {
                 }
             }
             .frame(height: max(5, 7 * metrics.density))
-            HStack(spacing: max(8, 11 * metrics.density)) {
+            WrappingMetricsLayout(
+                horizontalSpacing: max(8, 11 * metrics.density),
+                verticalSpacing: max(3, 4 * metrics.density)
+            ) {
                 CompactDetailMetric(
                     title: "Requests",
                     value: model.requestCount.formatted()
@@ -1259,6 +1335,7 @@ private struct ModelBreakdownRow: View {
                 )
             }
             .dashboardDetailText()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, max(5, 7 * metrics.density))
     }
@@ -1345,18 +1422,31 @@ private struct ProjectRow: View {
                 }
             }
             .frame(height: max(5, 6 * metrics.density))
-            HStack(spacing: max(10, 15 * metrics.density)) {
+            WrappingMetricsLayout(
+                horizontalSpacing: max(10, 15 * metrics.density),
+                verticalSpacing: max(3, 4 * metrics.density)
+            ) {
                 CompactDetailMetric(
                     title: "Requests",
                     value: project.requestCount.formatted()
                 )
-                Text("\(TokenFormatter.compact(project.totalTokens)) tokens")
-                Text("\(project.activeDays) days")
+                CompactDetailMetric(
+                    title: "Tokens",
+                    value: TokenFormatter.compact(project.totalTokens)
+                )
+                CompactDetailMetric(
+                    title: "Active",
+                    value: "\(project.activeDays)d"
+                )
                 if let lastUsed = project.lastUsed {
-                    Text("last \(lastUsed.formatted(.dateTime.year().month().day()))")
+                    CompactDetailMetric(
+                        title: "Last",
+                        value: lastUsed.formatted(.dateTime.year().month().day())
+                    )
                 }
             }
             .dashboardDetailText()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, max(8, 10 * metrics.density))
         .help(project.projectPath ?? "")
@@ -1481,38 +1571,37 @@ private struct SessionRow: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
 
-            HStack(spacing: max(6, 8 * metrics.density)) {
+            WrappingMetricsLayout(
+                horizontalSpacing: max(6, 8 * metrics.density),
+                verticalSpacing: max(3, 4 * metrics.density)
+            ) {
                 AgentBadge(agent: session.agent)
                 Text(UsageModelDisplayNameFormatter.compact(session.model))
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 150 * metrics.density, alignment: .leading)
                 Text(timeRange)
                 Text(shortID)
-                Spacer()
                 CompactDetailMetric(
                     title: "Requests",
                     value: session.requestCount.formatted()
                 )
             }
             .dashboardDetailText()
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             TokenCompositionBar(session: session)
                 .frame(height: max(5, 6 * metrics.density))
 
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: max(8, 11 * metrics.density)) {
-                    tokenMetrics
-                    Spacer(minLength: 5)
-                    speedLabel
-                    cacheHitLabel
-                }
-                VStack(alignment: .leading, spacing: max(3, 4 * metrics.density)) {
-                    HStack(spacing: max(8, 11 * metrics.density)) { tokenMetrics }
-                    HStack(spacing: max(8, 11 * metrics.density)) {
-                        speedLabel
-                        cacheHitLabel
-                    }
-                }
+            WrappingMetricsLayout(
+                horizontalSpacing: max(8, 11 * metrics.density),
+                verticalSpacing: max(3, 4 * metrics.density)
+            ) {
+                tokenMetrics
+                speedLabel
+                cacheHitLabel
             }
             .dashboardDetailText()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, max(8, 11 * metrics.density))
         .help(session.projectPath ?? session.sessionID)
