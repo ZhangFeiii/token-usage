@@ -1417,7 +1417,7 @@ private struct SessionRow: View {
                 Text(timeRange)
                 Text(shortID)
                 Spacer()
-                Text("\(session.requestCount.formatted()) req")
+                Text("\(session.requestCount.formatted()) 次请求")
             }
             .font(metrics.font(.sessionMeta))
             .foregroundStyle(Color.tokenMuted)
@@ -1429,32 +1429,23 @@ private struct SessionRow: View {
             TokenCompositionBar(session: session)
                 .frame(height: max(5, 6 * metrics.density))
 
-            HStack(spacing: max(7, 10 * metrics.density)) {
-                Text("in \(TokenFormatter.compact(session.inputTokens))")
-                Text("out \(TokenFormatter.compact(session.outputTokens))")
-                Text("cw \(TokenFormatter.compact(session.cacheWriteTokens))")
-                Text("cr \(TokenFormatter.compact(session.cacheReadTokens))")
-                if let speed = session.tokensPerSecond {
-                    Text(String(format: "%.1f tok/s", speed))
-                        .foregroundStyle(Color.dashboardPurple)
-                        .fontWeight(.semibold)
-                        .help("响应级有效生成速率（近似值）")
-                } else {
-                    Text("— tok/s")
-                        .foregroundStyle(Color.dashboardPurple)
-                        .help("该数据源缺少可靠的响应级生成时间")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: max(8, 11 * metrics.density)) {
+                    tokenMetrics
+                    Spacer(minLength: 5)
+                    speedLabel
+                    cacheHitLabel
                 }
-                Spacer(minLength: 6)
-                Text("cache \(dashboardPercent(session.cacheHitRate)) hit")
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                VStack(alignment: .leading, spacing: max(3, 4 * metrics.density)) {
+                    HStack(spacing: max(8, 11 * metrics.density)) { tokenMetrics }
+                    HStack(spacing: max(8, 11 * metrics.density)) {
+                        speedLabel
+                        cacheHitLabel
+                    }
+                }
             }
             .font(metrics.font(.sessionMeta))
-            .foregroundStyle(Color.tokenMuted)
             .monospacedDigit()
-            .lineLimit(1)
-            .allowsTightening(true)
-            .minimumScaleFactor(0.78)
         }
         .padding(.vertical, max(8, 11 * metrics.density))
         .help(session.projectPath ?? session.sessionID)
@@ -1464,6 +1455,74 @@ private struct SessionRow: View {
         guard let start = session.sessionStartedAt, let end = session.sessionEndedAt else { return "—" }
         let format = Date.FormatStyle.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)
         return "\(start.formatted(format))–\(end.formatted(format))"
+    }
+
+    @ViewBuilder
+    private var tokenMetrics: some View {
+        sessionMetric(
+            title: "新输入",
+            value: session.inputTokens,
+            color: .dashboardGreen
+        )
+        sessionMetric(
+            title: "输出",
+            value: session.outputTokens,
+            color: .dashboardPurple
+        )
+        if session.cacheWriteTokens > 0 {
+            sessionMetric(
+                title: "缓存写",
+                value: session.cacheWriteTokens,
+                color: .dashboardOrange
+            )
+        }
+        sessionMetric(
+            title: "缓存读",
+            value: session.cacheReadTokens,
+            color: .dashboardBlue
+        )
+    }
+
+    private func sessionMetric(title: String, value: Int64, color: Color) -> some View {
+        HStack(spacing: max(3, 4 * metrics.density)) {
+            Circle()
+                .fill(color)
+                .frame(width: 5 * metrics.typographyScale, height: 5 * metrics.typographyScale)
+            Text(title)
+                .foregroundStyle(Color.tokenMuted)
+            Text(TokenFormatter.compact(value))
+                .foregroundStyle(Color.tokenInk)
+                .fontWeight(.medium)
+        }
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+        .help("\(title)：\(value.formatted()) tokens")
+    }
+
+    @ViewBuilder
+    private var speedLabel: some View {
+        if let speed = session.tokensPerSecond {
+            Text(String(format: "≈ %.1f token/s", speed))
+                .foregroundStyle(Color.dashboardPurple)
+                .fontWeight(.semibold)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .help("输出 Token ÷ 可识别的模型生成时长；排除已识别的工具等待和用户停顿，但并非服务端实时遥测。")
+        } else {
+            Text("速度 —")
+                .foregroundStyle(Color.dashboardPurple)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .help("该数据源缺少可靠的响应级生成时间，未估算速度。")
+        }
+    }
+
+    private var cacheHitLabel: some View {
+        Text("命中 \(dashboardPercent(session.cacheHitRate))")
+            .foregroundStyle(Color.tokenMuted)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .help("缓存读取 ÷（新输入 + 缓存读取 + 缓存写入）")
     }
 }
 
