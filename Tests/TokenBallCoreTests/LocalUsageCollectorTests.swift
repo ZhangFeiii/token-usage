@@ -247,6 +247,75 @@ final class LocalUsageCollectorTests: XCTestCase {
         XCTAssertTrue(afterRestart.issues.isEmpty)
     }
 
+    func testGPT6PricingUpgradeReimportsUnchangedCodexSourceWithoutDuplicatingTokens() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TokenBallPricingUpgradeTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let sessionsURL = rootURL.appendingPathComponent("sessions", isDirectory: true)
+        let databaseURL = rootURL.appendingPathComponent("usage.sqlite3")
+        let cacheURL = rootURL.appendingPathComponent("source-fingerprints.json")
+        try FileManager.default.createDirectory(at: sessionsURL, withIntermediateDirectories: true)
+        let now = Date()
+        let timestamp = ISO8601DateFormatter().string(from: now)
+        let jsonl = """
+        {"type":"turn_context","timestamp":"\(timestamp)","payload":{"model":"gpt-6-astra"}}
+        {"type":"event_msg","timestamp":"\(timestamp)","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":30,"cache_write_input_tokens":10,"output_tokens":20}}}}
+        """
+        try Data(jsonl.utf8).write(to: sessionsURL.appendingPathComponent("astra.jsonl"))
+        let repository = SQLiteUsageRepository(databaseURL: databaseURL)
+        func makeCollector() -> LocalUsageCollector {
+            LocalUsageCollector(
+                store: repository,
+                codexArchiveDirectoryURL: rootURL.appendingPathComponent("missing-archive"),
+                codexSessionDirectoryURL: sessionsURL,
+                openCodeDatabaseURL: rootURL.appendingPathComponent("missing-opencode.db"),
+                deepSeekHarnessSessionDirectoryURLs: [rootURL.appendingPathComponent("missing-dsh")],
+                jsonImportDirectoryURL: rootURL.appendingPathComponent("imports"),
+                fingerprintCacheURL: cacheURL,
+                fingerprintDatabaseURL: databaseURL
+            )
+        }
+        let first = await makeCollector().collect()
+        XCTAssertEqual(first.importedRecordCount, 1)
+        XCTAssertTrue(first.issues.isEmpty)
+
+        // Simulate the previous release: same committed source fingerprints,
+        // but GPT-6 has no stored cost. Do not touch the source file.
+        var oldCache = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: cacheURL)) as? [String: Any]
+        )
+        oldCache["version"] = 2
+        try JSONSerialization.data(withJSONObject: oldCache).write(to: cacheURL)
+        _ = try await repository.importRecords([
+            UsageRecord(
+                id: "codex:astra:2",
+                agent: "codex",
+                model: "gpt-6-astra",
+                freshInputTokens: 60,
+                outputTokens: 20,
+                cacheReadTokens: 30,
+                cacheWriteTokens: 10,
+                costMicrosUSD: 0,
+                recordedAt: now
+            )
+        ])
+
+        let upgraded = await makeCollector().collect()
+        XCTAssertEqual(upgraded.importedRecordCount, 1)
+        XCTAssertTrue(upgraded.dataChanged)
+        XCTAssertTrue(upgraded.issues.isEmpty)
+        let snapshot = try await repository.fetchUsage(now: now)
+        let codex = try XCTUnwrap(snapshot.agents.first { $0.id == "codex" })
+        let astra = try XCTUnwrap(codex.models.first { $0.model == "gpt-6-astra" })
+        XCTAssertEqual(astra.todayTokens, 120)
+        XCTAssertEqual(astra.todayCostMicrosUSD, 1_755)
+
+        let afterRestart = await makeCollector().collect()
+        XCTAssertEqual(afterRestart.importedRecordCount, 0)
+        XCTAssertFalse(afterRestart.dataChanged)
+        XCTAssertTrue(afterRestart.issues.isEmpty)
+    }
+
     func testCollectorCachesOpenCodeDatabaseUntilMainFileChanges() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("TokenBallOpenCodeCacheTests-\(UUID().uuidString)", isDirectory: true)

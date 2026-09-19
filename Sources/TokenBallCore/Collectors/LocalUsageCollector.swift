@@ -62,7 +62,9 @@ public struct UsageCollectionReport: Equatable, Sendable {
 /// normalized results are skipped before import. Stable record IDs keep the
 /// statistics independent from any external accounting database.
 public actor LocalUsageCollector: UsageCollecting {
-    private static let fingerprintCacheVersion = 2
+    // Invalidate persisted skips when parsing or pricing changes so existing
+    // source records are upserted with the new values, even after a restart.
+    private static let fingerprintCacheVersion = 3
 
     public static var defaultCodexArchiveDirectoryURL: URL {
         FileManager.default.homeDirectoryForCurrentUser

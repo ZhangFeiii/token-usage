@@ -1,9 +1,9 @@
 import Foundation
 
-/// Official per-million-token USD rates for OpenAI GPT models, mirroring the
-/// reference pricing table of the retired statistics source. Codex and
-/// OpenCode sessions both use this table for GPT models; DeepSeek models are
-/// priced separately in CNY.
+/// Per-million-token USD estimates for OpenAI GPT models. Codex and OpenCode
+/// sessions both use this table; DeepSeek models are priced separately in CNY.
+/// Estimates use Standard short-context rates, without service-tier or
+/// long-context adjustments.
 public enum OpenAIModelPricing {
     public static func hasPublishedRate(modelID: String) -> Bool {
         rates(for: modelID) != nil
@@ -36,6 +36,9 @@ public enum OpenAIModelPricing {
 
     private static func rates(for modelID: String) -> Rates? {
         switch modelID.lowercased() {
+        case "gpt-6-astra":
+            // Verified 2026-09-19: https://developers.openai.com/api/docs/pricing
+            return Rates(input: 10, output: 50, cacheRead: 1, cacheWrite: 12.50)
         case "gpt-5.6-luna":
             return Rates(input: 0.20, output: 1.20, cacheRead: 0.02, cacheWrite: 0.25)
         case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-low", "gpt-5.6-medium",

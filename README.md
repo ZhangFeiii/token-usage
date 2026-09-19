@@ -62,6 +62,8 @@ Agent 本地会话记录（只读）
 面板和菜单栏的成本统一以人民币显示，便于跨 Agent、跨模型比较 Token 价值。
 
 - Codex、OpenCode 中按美元计价的模型先按对应模型价格计算 USD，再换算为 CNY。
+- GPT-6 Astra（`gpt-6-astra`）按 [OpenAI 官方价目表](https://developers.openai.com/api/docs/pricing) 的 Standard 短上下文价格估算（2026-09-19 核对）：每百万 Token 输入 $10、缓存读取 $1、缓存写入 $12.50、输出 $50。目前不区分 Fast、Batch/Flex 或长上下文费率，显示金额不是实际账单。
+- 本次 GPT-6 价格更新会使旧的来源指纹缓存失效；升级后首次启动会重新采集统计窗口内仍可读取的来源记录，按原 ID 更新费用，不重复累计 Token。
 - DeepSeek Harness，以及 Codex/OpenCode 路由的 DeepSeek 模型使用其人民币峰谷价格估算；缓存写入按未命中输入价格估算，因为来源没有单独公开缓存写入费率。
 - 没有公开价格的模型会明确标记为“未计价”，不会再用 `¥0` 暗示它是免费模型。
 - 每个本地日最多请求一次欧洲央行（ECB）每日欧元参考汇率 XML：
